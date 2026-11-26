@@ -20,9 +20,10 @@ impl StrPattern {
     /// A leading or trailing `*` leaves that end of the value open, as the
     /// vectorscan expression does. Literals and `windash` alternatives
     /// ignore ASCII case unless the pattern is cased. It takes time
-    /// proportional to the length of the value times the length of the
-    /// pattern: it tracks the set of positions each piece can end at
-    /// instead of backtracking.
+    /// proportional to the length of the value times the number of pieces
+    /// and alternatives, plus the length of the pattern: it tracks the set
+    /// of positions each piece can end at instead of backtracking, and
+    /// finds every match of a literal in one pass over the value.
     pub(crate) fn matches(&self, value: &[u8]) -> bool {
         // `reach[p]`: the pieces so far can match `value[..p]`.
         let mut reach = vec![false; value.len() + 1];
@@ -67,21 +68,64 @@ impl StrPattern {
 
     /// Marks in `next` the end of every match of `lit` that starts at a
     /// position marked in `reach`.
+    ///
+    /// It finds the matches, overlapping ones included, with the
+    /// Knuth-Morris-Pratt search, so a long literal is not compared again
+    /// from every position it could start at.
     fn step_lit(&self, value: &[u8], reach: &[bool], next: &mut [bool], lit: &[u8]) {
-        for (p, _) in reach.iter().enumerate().filter(|(_, r)| **r) {
-            let Some(found) = value.get(p..p + lit.len()) else {
-                continue;
-            };
-            let equal = if self.cased {
-                found == lit
+        let fold = |byte: u8| {
+            if self.cased {
+                byte
             } else {
-                found.eq_ignore_ascii_case(lit)
-            };
-            if equal && let Some(n) = next.get_mut(p + lit.len()) {
+                byte.to_ascii_lowercase()
+            }
+        };
+        let lit: Vec<u8> = lit.iter().map(|&byte| fold(byte)).collect();
+        if lit.is_empty() {
+            for (r, n) in reach.iter().zip(next.iter_mut()) {
+                *n |= *r;
+            }
+            return;
+        }
+        let border = borders(&lit);
+        // `matched`: the length of the longest prefix of `lit` that ends
+        // at the current position of `value`.
+        let mut matched = 0;
+        for (end, &byte) in (1..).zip(value) {
+            let byte = fold(byte);
+            while matched > 0 && lit.get(matched) != Some(&byte) {
+                matched = border.get(matched - 1).copied().unwrap_or_default();
+            }
+            if lit.get(matched) == Some(&byte) {
+                matched += 1;
+            }
+            if matched == lit.len()
+                && reach.get(end - matched).copied().unwrap_or_default()
+                && let Some(n) = next.get_mut(end)
+            {
                 *n = true;
             }
         }
     }
+}
+
+/// Returns, for each prefix `lit[..=i]`, the length of its longest proper
+/// prefix that is also its suffix: the failure function of the
+/// Knuth-Morris-Pratt search.
+fn borders(lit: &[u8]) -> Vec<usize> {
+    let mut border = Vec::with_capacity(lit.len());
+    border.push(0);
+    let mut k = 0;
+    for &byte in lit.iter().skip(1) {
+        while k > 0 && lit.get(k) != Some(&byte) {
+            k = border.get(k - 1).copied().unwrap_or_default();
+        }
+        if lit.get(k) == Some(&byte) {
+            k += 1;
+        }
+        border.push(k);
+    }
+    border
 }
 
 /// Returns how many bytes a `?` consumes at the start of `rest`, which is
@@ -217,6 +261,55 @@ mod tests {
         let starts = pattern(vec![Piece::AnyChar, lit(b"A"), Piece::AnyStr], false);
         assert!(starts.matches(&[0xe3, b'A', b'B']));
         assert!(!starts.matches(&[b'B', 0xe3, b'A']));
+    }
+
+    #[test]
+    fn literals_match_where_they_overlap() {
+        // The second match of `aa` in `aaa` overlaps the first.
+        let p = pattern(vec![Piece::AnyStr, lit(b"aa"), Piece::AnyChar], true);
+        assert!(p.matches(b"aaab"));
+        assert!(!p.matches(b"baa"));
+        let p = pattern(vec![Piece::AnyStr, lit(b"abab"), Piece::AnyChar], true);
+        assert!(p.matches(b"ababab\xe3"));
+        assert!(!p.matches(b"abaab\xe3"));
+        let caseless = pattern(vec![Piece::AnyStr, lit(b"aB"), Piece::AnyChar], false);
+        assert!(caseless.matches(b"AAbx"));
+        // A match only counts where the pieces before it can end.
+        let p = pattern(vec![Piece::AnyChar, lit(b"aa"), Piece::AnyStr], true);
+        assert!(p.matches(b"\xe3aa"));
+        assert!(!p.matches(b"\xe3baa"));
+    }
+
+    #[test]
+    fn borders_are_the_failure_function() {
+        assert_eq!(borders(b"a"), vec![0]);
+        assert_eq!(borders(b"aaaa"), vec![0, 1, 2, 3]);
+        assert_eq!(borders(b"abab"), vec![0, 0, 1, 2]);
+        assert_eq!(borders(b"aabaaab"), vec![0, 1, 0, 1, 2, 2, 3]);
+    }
+
+    #[test]
+    fn a_long_literal_with_a_repeated_prefix_finishes_quickly() {
+        // `contains: '?aa…ab'` on `aa…ab`: every position the `*` and the
+        // `?` can reach starts a long prefix of the literal, which a search
+        // from each position would compare again in full.
+        const LEN: usize = 50_000;
+        let mut literal = vec![b'a'; LEN];
+        literal.push(b'b');
+        let p = pattern(
+            vec![Piece::AnyStr, Piece::AnyChar, lit(&literal), Piece::AnyStr],
+            false,
+        );
+        let mut value = vec![b'a'; 2 * LEN];
+        let start = std::time::Instant::now();
+        assert!(!p.matches(&value));
+        value.push(b'b');
+        assert!(p.matches(&value));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
