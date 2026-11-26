@@ -9,8 +9,13 @@ accepts runs the same way in Hog.
 
 ## Status
 
-Early development. The crate builds against vectorscan and
-`giganto-client`, but does not handle rules yet.
+Early development. The crate reads rules in its Sigma-based format,
+Clumit Sigma, stores one source's rules as a versioned bundle, compiles
+rules with vectorscan and matches events against them through an event
+interface. The crate documentation describes the format.
+
+Not there yet: reading fields out of `giganto-client` records into that
+interface, and the converters from ET Open and SigmaHQ.
 
 ## Building
 

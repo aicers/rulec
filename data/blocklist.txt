@@ -1,0 +1,3 @@
+# Rules dropped at conversion, one per line: the source (`et_open`,
+# `sigma_hq` or `sigma_hq_emerging`) and the rule's id in that source,
+# separated by whitespace. Lines starting with `#` are comments.
