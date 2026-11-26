@@ -1,0 +1,9 @@
+globs:
+  - "**/*.md"
+ignores:
+  - ".github/**"
+  - "target/**"
+  - "CHANGELOG.md"
+config:
+  MD024:
+    siblings_only: true
