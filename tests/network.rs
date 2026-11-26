@@ -604,6 +604,16 @@ fn rules_naming_unknown_fields() {
         "    sel:\n        orig_addr|cidr: 10.0.0.0/8\n        service|fieldref: conn_state\n    condition: sel\n",
     );
     assert!(unknown_fields(&ok).unwrap().is_empty());
+    // A search identifier the condition does not use still counts.
+    let unused = rule(
+        "unused",
+        "http",
+        "    sel:\n        uri: /a\n    unused:\n        missing|fieldref: missing_ref\n    condition: sel\n",
+    );
+    assert_eq!(
+        unknown_fields(&unused).unwrap(),
+        vec!["missing", "missing_ref"]
+    );
     let host = rule(
         "host",
         "process_create",

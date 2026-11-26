@@ -1,14 +1,9 @@
 //! The field catalog: which field names the [`Event`](crate::Event)
 //! implementations of each kind of raw event answer.
 
-use std::collections::BTreeSet;
-
 use giganto_client::RawEventKind;
 
-use crate::{
-    expr::{Expr, Test},
-    rule::Rule,
-};
+use crate::rule::Rule;
 
 /// The connection fields every network record has.
 macro_rules! connection_fields {
@@ -172,7 +167,8 @@ pub struct KindNotCataloged(pub RawEventKind);
 /// not have, sorted and without repeats; empty if the kind has them all.
 ///
 /// The names a rule uses are the fields of all its field conditions and
-/// the fields `fieldref` refers to. Whether to drop the rule, and under
+/// the fields `fieldref` refers to, in every search identifier of its
+/// `detection`, including one its `condition` does not use. Whether to drop the rule, and under
 /// which reason, is the caller's decision.
 ///
 /// # Errors
@@ -182,38 +178,18 @@ pub struct KindNotCataloged(pub RawEventKind);
 pub fn unknown_fields(rule: &Rule) -> Result<Vec<&str>, KindNotCataloged> {
     let kind = rule.kind();
     let fields = catalog_fields(kind).ok_or(KindNotCataloged(kind))?;
-    Ok(rule_fields(&rule.detection)
-        .into_iter()
+    Ok(rule
+        .fields
+        .iter()
+        .map(String::as_str)
         .filter(|name| !fields.contains(name))
         .collect())
 }
 
-/// Returns every field name `detection` uses, sorted and without repeats.
-fn rule_fields(detection: &Expr) -> BTreeSet<&str> {
-    fn referenced<'a>(test: &'a Test, out: &mut BTreeSet<&'a str>) {
-        match test {
-            Test::FieldRef { other, .. } => {
-                out.insert(other);
-            }
-            Test::Neq(inner) => {
-                for test in inner {
-                    referenced(test, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut out = BTreeSet::new();
-    detection.for_each_leaf(&mut |leaf| {
-        out.insert(leaf.field.as_str());
-        referenced(&leaf.test, &mut out);
-    });
-    out
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]

@@ -32,7 +32,9 @@ const GZIP_FIXED_HEADER_LEN: usize = 10;
 /// 1. **Chunked.** The body is chunked if it starts with a chunk-size line
 ///    — one or more hex digits, then optionally an extension starting with
 ///    `;`, ending in CRLF or LF — and the first chunk's data is followed by
-///    CRLF or LF, or the input ends inside the first chunk. The chunks'
+///    CRLF or LF, or the input ends inside the first chunk. A size too
+///    large to hold is read as the largest one, so a body with such a size
+///    ends inside that chunk. The chunks'
 ///    data is joined up to the last chunk (size `0`); its trailers are
 ///    dropped. If the input ends inside a chunk, or a later chunk-size line
 ///    or the line end after a later chunk's data is malformed, the data
@@ -56,9 +58,13 @@ const GZIP_FIXED_HEADER_LEN: usize = 10;
 /// Neither chunked nor compressed, the body is returned as it is. Chunked
 /// but not compressed, the joined chunks are.
 ///
-/// Each step's output is cut at [`MAX_DECODED_BODY_LEN`], and unpacking
-/// stops when it reaches that length; for raw deflate, an output that
-/// reaches it is used without reading the rest of the stream.
+/// The unpacked output is cut at [`MAX_DECODED_BODY_LEN`]: inflating stops
+/// when its output reaches that length (for raw deflate, such an output is
+/// used without reading the rest of the stream), and joined chunks that are
+/// not compressed are cut there. The joined chunks are inflated whole,
+/// however long, so the cap applies to what comes out of inflating rather
+/// than to the compressed data going in; they are never longer than the
+/// body.
 #[must_use]
 pub fn decode_body(body: &[u8]) -> Cow<'_, [u8]> {
     let dechunked = dechunk(body);
@@ -67,23 +73,28 @@ pub fn decode_body(body: &[u8]) -> Cow<'_, [u8]> {
         return Cow::Owned(inflated);
     }
     match dechunked {
-        Some(joined) => Cow::Owned(joined),
+        Some(mut joined) => {
+            joined.truncate(MAX_DECODED_BODY_LEN);
+            Cow::Owned(joined)
+        }
         None => Cow::Borrowed(body),
     }
 }
 
 /// Reads a chunk-size line at the start of `input`: its size, and the
-/// input after the line. `None` if `input` does not start with one, or
-/// the size does not fit in 64 bits.
-fn size_line(input: &[u8]) -> Option<(u64, &[u8])> {
+/// input after the line. `None` if `input` does not start with one. A
+/// size past `usize::MAX` saturates there: no chunk that long can be in
+/// the input, so either way the input ends inside it.
+fn size_line(input: &[u8]) -> Option<(usize, &[u8])> {
+    const RADIX: u32 = 16;
     let digits = input.iter().take_while(|b| b.is_ascii_hexdigit()).count();
     if digits == 0 {
         return None;
     }
     let (hex, rest) = input.split_at(digits);
-    let size = hex.iter().try_fold(0_u64, |size, &d| {
-        let digit = char::from(d).to_digit(16)?;
-        size.checked_mul(16)?.checked_add(u64::from(digit))
+    let size = hex.iter().try_fold(0_usize, |size, &d| {
+        let digit = usize::try_from(char::from(d).to_digit(RADIX)?).ok()?;
+        Some(size.saturating_mul(16).saturating_add(digit))
     })?;
     let line_end = rest.iter().position(|&b| b == b'\n')?;
     let (line, after) = rest.split_at(line_end);
@@ -101,28 +112,22 @@ fn line_end(input: &[u8]) -> Option<&[u8]> {
         .or_else(|| input.strip_prefix(b"\n"))
 }
 
-/// Appends `data` to `out`, up to [`MAX_DECODED_BODY_LEN`] in all.
-/// Returns whether `out` reached that length.
-fn push_capped(out: &mut Vec<u8>, data: &[u8]) -> bool {
-    let room = MAX_DECODED_BODY_LEN.saturating_sub(out.len());
-    out.extend_from_slice(data.get(..room).unwrap_or(data));
-    out.len() >= MAX_DECODED_BODY_LEN
-}
-
 /// Joins the chunks of a chunked body, or returns `None` if the body is
 /// not chunked.
+///
+/// The chunks are joined whole: the output is never longer than `body`,
+/// and [`decode_body`] caps what it makes of them.
 fn dechunk(body: &[u8]) -> Option<Vec<u8>> {
     let (mut size, mut rest) = size_line(body)?;
     let mut out = Vec::new();
     let mut first = true;
     while size > 0 {
-        let len = usize::try_from(size).unwrap_or(usize::MAX);
-        let Some(data) = rest.get(..len) else {
+        let Some(data) = rest.get(..size) else {
             // The input ends inside the chunk.
-            push_capped(&mut out, rest);
+            out.extend_from_slice(rest);
             break;
         };
-        let after = rest.get(len..).unwrap_or_default();
+        let after = rest.get(size..).unwrap_or_default();
         let Some(next) = line_end(after) else {
             // The input ends before the line end (or inside it, after a
             // CR), which is still inside the chunk; anything else breaks
@@ -130,12 +135,10 @@ fn dechunk(body: &[u8]) -> Option<Vec<u8>> {
             if first && !(after.is_empty() || after == b"\r") {
                 return None;
             }
-            push_capped(&mut out, data);
+            out.extend_from_slice(data);
             break;
         };
-        if push_capped(&mut out, data) {
-            break;
-        }
+        out.extend_from_slice(data);
         first = false;
         let Some((next_size, after_line)) = size_line(next) else {
             break;
@@ -345,9 +348,15 @@ mod tests {
         ] {
             assert_eq!(&*decode_body(body), body);
         }
-        // A size past 64 bits is not a size.
-        let huge = b"10000000000000000\r\nx";
-        assert_eq!(&*decode_body(huge), huge);
+        // A size too large to hold saturates: the input ends inside the
+        // chunk.
+        assert_eq!(&*decode_body(b"10000000000000000\r\nhello"), b"hello");
+        let huge = format!("{}\r\nhello", "f".repeat(64));
+        assert_eq!(&*decode_body(huge.as_bytes()), b"hello");
+        assert_eq!(
+            &*decode_body(b"5\r\nhello\r\n10000000000000000\r\nworld"),
+            b"helloworld"
+        );
     }
 
     #[test]
@@ -420,6 +429,26 @@ mod tests {
         }
         let chunked = chunk(&[&big]);
         assert_eq!(decode_body(&chunked).len(), MAX_DECODED_BODY_LEN);
+    }
+
+    #[test]
+    fn chunked_compressed_data_is_not_capped_before_inflating() {
+        // Stored, not compressed: the gzip stream is longer than the cap,
+        // and what it inflates to fits in it exactly.
+        let data: Vec<u8> = (0..MAX_DECODED_BODY_LEN)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let mut e = GzEncoder::new(Vec::new(), Compression::none());
+        e.write_all(&data).unwrap();
+        let gz = e.finish().unwrap();
+        assert!(gz.len() > MAX_DECODED_BODY_LEN);
+        assert_eq!(&*decode_body(&gz), &data[..]);
+        let pieces: Vec<&[u8]> = gz.chunks(100_000).collect();
+        assert_eq!(&*decode_body(&chunk(&pieces)), &data[..]);
+        let mut e = DeflateEncoder::new(Vec::new(), Compression::none());
+        e.write_all(&data).unwrap();
+        let raw = e.finish().unwrap();
+        assert_eq!(&*decode_body(&chunk(&[&raw])), &data[..]);
     }
 
     #[test]
