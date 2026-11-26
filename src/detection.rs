@@ -11,8 +11,11 @@ use crate::{
 
 /// The only placeholder `expand` accepts.
 const HOME_NET: &str = "home_net";
-/// The most values one field condition may expand into, through
-/// `windash` before an encoding or through `base64offset`.
+/// The most values one value of a field condition — the scalar, or one
+/// member of its list — may expand into, when a Base64 encoding spells out
+/// its `windash` alternatives and `base64offset` makes three forms of each.
+/// Each value is held to it on its own: the members of a list do not share
+/// it, and it does not limit how many members a list has.
 const MAX_EXPANSION: usize = 1024;
 /// The most `and`, `or` and `not` nodes a rule's detection may nest.
 ///

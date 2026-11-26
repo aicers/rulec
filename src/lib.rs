@@ -75,6 +75,9 @@
 //!
 //! Some combinations are pinned down:
 //!
+//! - A field condition names each modifier at most once, and takes at most
+//!   one numeric comparison (`lt`, `lte`, `gt`, `gte`) and at most one of
+//!   `contains`, `startswith` and `endswith`. `i`, `m` and `s` follow `re`.
 //! - The modifiers that transform a value — `contains`, `startswith`,
 //!   `endswith` and the encodings — apply in the order written, as Sigma
 //!   2.1 defines. `contains`, `startswith` and `endswith` add a `*`, so
@@ -89,12 +92,31 @@
 //!   an address, for `cidr|neq`, a field value must read as one to count:
 //!   a value that does not read makes `neq` false, as it does the
 //!   comparison `neq` negates.
-//! - `fieldref` takes `neq`, `cased` and `all`; `cidr` takes `neq`.
-//! - `exists` stands alone; `null` takes no modifier and is not listed
-//!   with other values.
-//! - One field condition expands into at most 1024 values (`windash`
-//!   before a Base64 encoding, `base64offset`); a rule past that is
-//!   rejected as malformed.
+//! - What a condition compares decides which modifiers it takes beside the
+//!   one that names it; any other modifier is rejected:
+//!   - `exists` stands alone.
+//!   - `fieldref` takes `neq`, `cased` and `all`.
+//!   - `cidr` takes `expand`, `neq`, `cased` and `all`; a `%home_net%`
+//!     value is written only as `field|expand|cidr`, with no other
+//!     modifier (see below).
+//!   - `re` takes `i`, `m`, `s`, `neq`, `cased` and `all`.
+//!   - `len` takes one numeric comparison, `neq`, `cased` and `all`.
+//!   - A numeric comparison without `len` takes only `cased` and `all`, so
+//!     `status|gt|neq` is rejected.
+//!   - A string condition takes `contains`, `startswith`, `endswith`,
+//!     `windash`, `base64`, `base64offset`, `utf16le`, `utf16be`, `utf16`,
+//!     `wide`, `expand`, `cased`, `all` and `neq`.
+//!
+//!   Each list is still subject to the rules for `all` and `neq` above.
+//! - `null` takes no modifier and is not listed with other values.
+//! - A Base64 encoding spells out the `windash` alternatives of a value,
+//!   and `base64offset` makes three forms of each. Each value — the
+//!   scalar, or each member of a list on its own — expands into at most
+//!   1024 values that way; a rule with a value past that is rejected as
+//!   malformed. The ceiling is neither shared by the members of a list nor
+//!   a limit on how many members a list has:
+//!   `f|windash|base64: ['a----', 'b----']` expands each member into 625
+//!   values, 1250 in all, and is read.
 //! - A detection nests `and`, `or` and `not` at most 32 deep, counting
 //!   those a search identifier's mappings and lists stand for, and a
 //!   `condition` nests `not` and parentheses at most 64 deep; a rule past
