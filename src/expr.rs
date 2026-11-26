@@ -156,7 +156,7 @@ pub(crate) enum Piece {
     Lit(Vec<u8>),
     /// Any run of bytes, including none (`*`).
     AnyStr,
-    /// One character (`?`).
+    /// One character, or one byte where no character starts (`?`).
     AnyChar,
     /// One of the byte strings (the dash variants of `windash`).
     Alt(Vec<Vec<u8>>),

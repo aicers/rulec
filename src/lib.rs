@@ -198,8 +198,16 @@
 //! - **Conditions that match an empty value.** A plain, `contains`,
 //!   `startswith` or `endswith` condition whose value is `''` or only `*`
 //!   is checked without vectorscan, as Sigma defines it.
-//! - **`?`** matches one UTF-8 encoded character, or one byte that does not
-//!   start one.
+//! - **`?`** matches one UTF-8 encoded character, or one byte where no
+//!   character starts. A character is a well-formed encoding by RFC 3629
+//!   (as Rust's `str` reads UTF-8): no overlong encoding, no surrogate,
+//!   nothing above U+10FFFF. What `?` takes depends only on the bytes where
+//!   it starts: the whole character if one starts there, else that one
+//!   byte — a continuation byte, a byte that starts no character, or a lead
+//!   byte whose character is cut short or followed by a byte out of range,
+//!   whose following bytes each count as one byte. So `??` matches the
+//!   bytes `E3 81` and `?A` the bytes `E3 41`, while `?` alone matches
+//!   neither, nor the overlong `C0 80`. An empty value matches no `?`.
 //! - Rules with the same source and id are all compiled and matched.
 //!
 //! # Network records
@@ -304,6 +312,7 @@ mod normalize;
 pub mod reason;
 mod rule;
 mod summary;
+mod wildcard;
 mod yaml;
 
 pub use attrs::{Model, Os, Source, UnknownName};

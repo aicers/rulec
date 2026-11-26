@@ -296,7 +296,10 @@ impl<'a, 'e> Context<'a, 'e> {
     /// Returns whether `test` holds for the value at `index` of `field`.
     fn value_holds(&self, test: &CTest, index: usize, value: &FieldValue<'_>) -> bool {
         match test {
-            CTest::Pattern { db, id } => self.hits.contains(&(*db, *id, index)),
+            CTest::Pattern { db, id, check } => {
+                self.hits.contains(&(*db, *id, index))
+                    && check.as_ref().is_none_or(|p| p.matches(&value.as_bytes()))
+            }
             CTest::Empty => value.byte_len() == 0,
             CTest::Any => true,
             CTest::Num(cmp, n) => value.as_int().is_some_and(|v| cmp.holds(&v, n)),

@@ -18,9 +18,15 @@ use crate::{
     rule::Rule,
 };
 
-/// One UTF-8 encoded character, or one byte that cannot start one: what
-/// the wildcard `?` matches.
-const ANY_CHAR: &[u8] = br"(?:[\x00-\xbf\xf8-\xff]|[\xc0-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}|[\xf0-\xf7][\x80-\xbf]{3})";
+/// One byte, or one well-formed multi-byte UTF-8 character: what the
+/// wildcard `?` is scanned as.
+///
+/// It accepts everything `?` matches and more: `?` takes a lead byte on its
+/// own only where no well-formed character starts there, which depends on
+/// the bytes after it, and a vectorscan expression cannot look at them
+/// without consuming them. So a value this expression matches is checked
+/// again in Rust ([`StrPattern::matches`]), which decides.
+const ANY_CHAR: &[u8] = br"(?:[\x00-\xff]|[\xc2-\xdf][\x80-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]{2}|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf]{2}|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2})";
 
 /// A count of rules for one kind of raw event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,7 +152,15 @@ pub enum CompileError {
 /// A test with its patterns resolved to database entries.
 #[derive(Debug)]
 pub(crate) enum CTest {
-    Pattern { db: usize, id: u32 },
+    /// A pattern scanned by vectorscan: the condition holds for a value it
+    /// matched, if `check` is `None` or also matches the value. `check` is
+    /// the string pattern of a condition with a `?`, which vectorscan
+    /// matches more widely than it means.
+    Pattern {
+        db: usize,
+        id: u32,
+        check: Option<StrPattern>,
+    },
     Empty,
     Any,
     Null,
@@ -155,7 +169,10 @@ pub(crate) enum CTest {
     Len(Cmp, u64),
     Cidr(Cidr),
     HomeNet,
-    FieldRef { other: String, cased: bool },
+    FieldRef {
+        other: String,
+        cased: bool,
+    },
     Neq(Vec<CTest>),
 }
 
@@ -486,9 +503,14 @@ impl ExprCompiler<'_> {
 
     fn test(&mut self, field: &str, test: &Test) -> Result<CTest, CompileError> {
         Ok(match test {
-            Test::Str(_) | Test::Regex(_) => {
-                let (expr, flags) = expression(test).unwrap_or_default();
-                self.pattern(field, expr, flags)?
+            Test::Str(p) => {
+                let (expr, flags) = str_expression(p);
+                let check = p.has_any_char().then(|| p.clone());
+                self.pattern(field, expr, flags, check)?
+            }
+            Test::Regex(r) => {
+                let (expr, flags) = regex_expression(r);
+                self.pattern(field, expr, flags, None)?
             }
             Test::Empty => CTest::Empty,
             Test::Any => CTest::Any,
@@ -514,7 +536,13 @@ impl ExprCompiler<'_> {
         })
     }
 
-    fn pattern(&mut self, field: &str, expr: Vec<u8>, flags: Flag) -> Result<CTest, CompileError> {
+    fn pattern(
+        &mut self,
+        field: &str,
+        expr: Vec<u8>,
+        flags: Flag,
+        check: Option<StrPattern>,
+    ) -> Result<CTest, CompileError> {
         let key = (self.kind, field.to_string());
         let db = match self.builder_index.get(&key) {
             Some(db) => *db,
@@ -555,7 +583,7 @@ impl ExprCompiler<'_> {
         {
             owners.push(self.rule);
         }
-        Ok(CTest::Pattern { db, id })
+        Ok(CTest::Pattern { db, id, check })
     }
 }
 
