@@ -225,6 +225,7 @@ impl<'a, 'e> Context<'a, 'e> {
 
     fn eval(&self, expr: &CExpr) -> bool {
         match expr {
+            CExpr::Never => false,
             CExpr::And(items) => items.iter().all(|item| self.eval(item)),
             CExpr::Or(items) => items.iter().any(|item| self.eval(item)),
             CExpr::Not(item) => !self.eval(item),
@@ -238,6 +239,7 @@ impl<'a, 'e> Context<'a, 'e> {
     /// not true.
     fn witness<'x>(&self, expr: &'x CExpr, want: bool, out: &mut Vec<&'x str>) {
         match expr {
+            CExpr::Never => {}
             CExpr::Not(item) => self.witness(item, !want, out),
             CExpr::And(items) | CExpr::Or(items) => {
                 // Every item decides an AND that is true or an OR that is

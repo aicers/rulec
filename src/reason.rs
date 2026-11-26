@@ -44,3 +44,10 @@ pub const MIXED_DIRECTIONS: &str = "mixed_directions";
 pub const NO_RESPONSE_VALUE: &str = "no_response_value";
 /// The rule's direction contradicts a buffer's direction.
 pub const DIRECTION_MISMATCH: &str = "direction_mismatch";
+
+/// A macOS logsource has no supported input kind yet.
+pub const NO_INPUT_KIND_MACOS: &str = "no_input_kind_macos";
+/// The source logsource has no mapping to an input kind.
+pub const NO_INPUT_KIND: &str = "no_input_kind";
+/// The logsource has no field for keyword searches.
+pub const KEYWORDS_WITHOUT_FIELD: &str = "keywords_without_field";

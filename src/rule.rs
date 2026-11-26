@@ -102,6 +102,11 @@ impl Rule {
     /// Returns the reason the rule cannot be read: see [`ReadError`].
     pub fn from_yaml(text: &str) -> Result<Self, ReadError> {
         let node = yaml::load(text).map_err(|e| ReadError::Format(format!("YAML: {e}")))?;
+        Self::from_node(node)
+    }
+
+    pub(crate) fn from_node(node: Node) -> Result<Self, ReadError> {
+        validate_never(&node, NeverPosition::Root)?;
         let Node::Map(entries) = node else {
             return Err(ReadError::Format(
                 "the rule is not a YAML mapping".to_string(),
@@ -304,6 +309,51 @@ impl Rule {
     pub fn kind(&self) -> RawEventKind {
         self.kind
     }
+}
+
+/// Positions in which a `!never` scalar may occur. Only a field map's
+/// direct value is allowed, including maps in an OR list.
+#[derive(Clone, Copy)]
+enum NeverPosition {
+    Root,
+    Detection,
+    Search,
+    FieldValue,
+    Forbidden,
+}
+
+fn validate_never(node: &Node, position: NeverPosition) -> Result<(), ReadError> {
+    match node {
+        Node::Never if !matches!(position, NeverPosition::FieldValue) => {
+            return Err(ReadError::Format(
+                "`!never` is only a field condition value".into(),
+            ));
+        }
+        Node::Map(entries) => {
+            for (key, value) in entries {
+                let next = match position {
+                    NeverPosition::Root if key == "detection" => NeverPosition::Detection,
+                    NeverPosition::Detection if key != "condition" => NeverPosition::Search,
+                    NeverPosition::Search => NeverPosition::FieldValue,
+                    _ => NeverPosition::Forbidden,
+                };
+                validate_never(value, next)?;
+            }
+        }
+        Node::Seq(items) => {
+            for item in items {
+                let next =
+                    if matches!(position, NeverPosition::Search) && matches!(item, Node::Map(_)) {
+                        NeverPosition::Search
+                    } else {
+                        NeverPosition::Forbidden
+                    };
+                validate_never(item, next)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Reads a string attribute.

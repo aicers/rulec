@@ -14,6 +14,8 @@ pub(crate) enum Expr {
     Or(Vec<Expr>),
     Not(Box<Expr>),
     Leaf(Leaf),
+    /// A field condition explicitly declared impossible.
+    Never,
 }
 
 impl Expr {
@@ -45,7 +47,7 @@ impl Expr {
                 1 + items.iter().map(Expr::depth).max().unwrap_or_default()
             }
             Expr::Not(item) => 1 + item.depth(),
-            Expr::Leaf(_) => 0,
+            Expr::Leaf(_) | Expr::Never => 0,
         }
     }
 
@@ -59,6 +61,7 @@ impl Expr {
             }
             Expr::Not(item) => item.for_each_leaf(f),
             Expr::Leaf(leaf) => f(leaf),
+            Expr::Never => {}
         }
     }
 
