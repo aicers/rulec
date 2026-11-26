@@ -479,6 +479,64 @@ fn anchors_lengths_and_regex_chains() {
 }
 
 #[test]
+fn relative_pcre_preserves_its_subject_and_committed_cursor() {
+    // A sticky buffer starts with cursor zero even without a preceding match.
+    assert!(matches(r#"http.uri.raw; pcre:"/abc/R";"#, "uri", b"xabc"));
+    assert!(!matches(r#"http.uri.raw; pcre:"/^abc/R";"#, "uri", b"xabc"));
+
+    // R gives PCRE a new subject beginning at the previous match's end.
+    // Anchors and word boundaries cannot be left unchanged in a combined RE.
+    for expression in [r"^b", r"\Ab", r"\bb", r"\Bb", r"(?m:^b)"] {
+        dropped(
+            "http any any -> any any",
+            &format!(r#"http.uri.raw; content:"a"; pcre:"/{expression}/R";"#),
+            reason::UNSUPPORTED_REGEX,
+        );
+    }
+    // PCRE commits to its chosen end before evaluating the following keyword.
+    // A combined RE would backtrack a+ to a, incorrectly accepting "aa".
+    for expression in ["a+", "a+?", "a|aa", "(a+)", "a{1,2}"] {
+        dropped(
+            "http any any -> any any",
+            &format!(r#"http.uri.raw; pcre:"/{expression}/"; content:"a"; distance:0; within:1;"#),
+            reason::UNSUPPORTED_REGEX,
+        );
+    }
+    dropped(
+        "http any any -> any any",
+        r#"http.uri.raw; pcre:"/^a+?/"; isdataat:!1,relative;"#,
+        reason::UNSUPPORTED_REGEX,
+    );
+    dropped(
+        "http any any -> any any",
+        r#"http.uri.raw; pcre:!"/a/"; isdataat:!1,relative;"#,
+        reason::UNSUPPORTED_REGEX,
+    );
+    // These operators remain supported when no later test uses the cursor.
+    assert!(matches(r#"http.uri.raw; pcre:"/a+/";"#, "uri", b"aa"));
+    assert!(matches(
+        r#"http.uri.raw; content:"a"; pcre:"/[b-d].\x65/R"; content:"f"; distance:0; within:1;"#,
+        "uri",
+        b"abcef"
+    ));
+    assert!(matches(
+        r#"http.uri.raw; content:"a"; pcre:"/\^b\+/R"; content:"c"; distance:0; within:1;"#,
+        "uri",
+        b"a^b+c"
+    ));
+    assert!(matches(
+        r#"http.uri.raw; content:"a"; pcre:"/[^b]+/R";"#,
+        "uri",
+        b"accc"
+    ));
+    assert!(matches(
+        r#"http.uri.raw; pcre:"/[^^]/"; content:"b"; distance:0; within:1;"#,
+        "uri",
+        b"ab"
+    ));
+}
+
+#[test]
 fn relative_start_cursor_and_expanded_list_exclusions() {
     let options = r#"http.uri.raw; content:"b"; distance:2; within:2;"#;
     assert!(matches(options, "uri", b"xxb"));

@@ -383,10 +383,10 @@ fn buffer_conditions(
             if pattern.relative() {
                 if let Some(chain) = chains.last_mut() {
                     chain.push(pattern);
-                } else if matches!(pattern.value, Value::Content(_)) {
-                    chains.push(vec![pattern]);
                 } else {
-                    return Err(error(reason::UNSUPPORTED_REGEX));
+                    // A sticky buffer starts with cursor zero. An initial /R
+                    // searches the entire buffer, just like an initial content.
+                    chains.push(vec![pattern]);
                 }
             } else {
                 chains.push(vec![pattern]);
@@ -494,6 +494,7 @@ fn chain_condition(
         // Independent negative PCRE is a negated regex condition; positional
         // negative content and any negation inside a cursor chain need lookaround.
         if chain.len() == 1
+            && !first.end
             && let Value::Pcre { expression, flags } = &first.value
         {
             let (expression, caseless) = pcre_fragment(expression, flags, true)?;
@@ -578,6 +579,13 @@ fn chain_condition(
                 }
             }
             Value::Pcre { expression, flags } => {
+                if !pcre_chain_safe(
+                    expression,
+                    index > 0,
+                    index + 1 < chain.len() || pattern.end,
+                ) {
+                    return Err(error(reason::UNSUPPORTED_REGEX));
+                }
                 if index > 0 {
                     regex.push_str(&gap(0, None)?);
                 }
@@ -595,6 +603,63 @@ fn chain_condition(
         if caseless { "|re|i" } else { "|re" },
         &quote(&regex),
     ))
+}
+
+fn pcre_chain_safe(expression: &str, relative: bool, cursor_used: bool) -> bool {
+    if !relative && !cursor_used {
+        return true;
+    }
+    // Suricata 7.0.3 DetectPcrePayloadMatch in detect-pcre.c supplies /R
+    // with a subject sliced at the old cursor. A combined RE sees the entire
+    // field instead, so beginning/word assertions would have different input.
+    // The same function commits PCRE's chosen end before a later keyword runs;
+    // vectorscan can backtrack a variable-length fragment to satisfy that
+    // keyword. Only simple fixed-width sequences may supply a later cursor.
+    let mut input = expression.bytes().peekable();
+    let mut in_class = false;
+    let mut class_start = false;
+    while let Some(byte) = input.next() {
+        if byte == b'\\' {
+            let Some(escaped) = input.next() else {
+                return false;
+            };
+            if matches!(escaped, b'Q' | b'E') {
+                // Quoting would change which subsequent bytes are operators.
+                return false;
+            }
+            if !in_class {
+                if relative && matches!(escaped, b'A' | b'b' | b'B' | b'G') {
+                    return false;
+                }
+                if cursor_used {
+                    if escaped == b'x' {
+                        for _ in 0..2 {
+                            if !input.next().is_some_and(|b| b.is_ascii_hexdigit()) {
+                                return false;
+                            }
+                        }
+                    } else if escaped.is_ascii_alphanumeric()
+                        && !b"dDsSwWhHvVnrtfaeAZzbB".contains(&escaped)
+                    {
+                        return false;
+                    }
+                }
+            }
+            class_start = false;
+        } else if in_class {
+            if byte == b']' && !class_start {
+                in_class = false;
+            }
+            class_start = false;
+        } else if byte == b'[' {
+            in_class = true;
+            class_start = true;
+            let _ = input.next_if_eq(&b'^');
+        } else if relative && byte == b'^' || cursor_used && b"*+?{}()|".contains(&byte) {
+            return false;
+        }
+    }
+    !in_class
 }
 
 // Distinguishes an absent upper bound from an arithmetic underflow.

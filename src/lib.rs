@@ -78,6 +78,15 @@
 //! dynamic (`addr|expand|cidr: '%home_net%'`); other network and port
 //! variables use the Suricata 7.0.3 default configuration.
 //!
+//! An initial PCRE `R` flag searches from cursor zero. Later relative PCRE
+//! beginning/word assertions are rejected because they see a sliced subject
+//! in Suricata. A PCRE followed by a relative test (or an end test) is accepted
+//! only for simple fixed-width sequences of literals, character classes,
+//! dots and byte escapes. Groups, alternatives and quantifiers in that
+//! position are rejected: a combined regex could backtrack to a different
+//! end than Suricata's committed PCRE cursor. These combinations count as
+//! `unsupported_regex`; standalone PCRE keeps its usual supported syntax.
+//!
 //! The `references` attribute expands `reference:<type>,<value>` with the
 //! prefix from Suricata 7.0.3's built-in `etc/reference.config`, ignoring
 //! archive copies. For example `url,www.example.com/a` becomes
