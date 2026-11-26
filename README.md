@@ -1,15 +1,43 @@
 # rulec
 
-rulec is the rule compiler for public signature rules. It is planned as
-one Rust crate that unpacks the ET Open and SigmaHQ rule sets, converts
-them into one Sigma-based rule format, compiles them with vectorscan and
-matches them against raw events. REview uses it to convert and check
-rules, and Hog uses the same crate to compile and match them, so a rule
-REview accepts runs the same way in Hog.
+rulec is the rule compiler for public signature rules: one Rust library
+crate that unpacks the ET Open and SigmaHQ rule sets, converts them into
+one Sigma-based rule format, compiles them with vectorscan and matches
+them against raw events. REview uses it to convert and check rules, and
+Hog uses the same crate to compile and match them, so a rule REview
+accepts runs the same way in Hog.
 
 ## Status
 
-Early concept. This repository does not contain any code yet.
+Early development. The crate builds against vectorscan and
+`giganto-client`, but does not handle rules yet.
+
+## Building
+
+The crate builds a vendored copy of vectorscan from source through
+[`vectorscan-rs`][vectorscan-rs], so a local build needs CMake, Boost's
+headers (1.57 or later) and a C++ compiler besides Rust.
+
+On Ubuntu:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y build-essential cmake libboost-dev
+```
+
+On macOS, with the Xcode Command Line Tools (`xcode-select --install`)
+and [Homebrew][homebrew]:
+
+```sh
+brew install cmake boost
+```
+
+Then build and test as usual:
+
+```sh
+cargo build
+cargo test
+```
 
 ## License
 
@@ -31,3 +59,5 @@ license][apache-license], shall be licensed as above, without any additional
 terms or conditions.
 
 [apache-license]: http://www.apache.org/licenses/LICENSE-2.0
+[homebrew]: https://brew.sh
+[vectorscan-rs]: https://crates.io/crates/vectorscan-rs

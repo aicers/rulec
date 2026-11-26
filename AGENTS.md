@@ -4,8 +4,10 @@ This document defines the rules, context, and standards for AI agents
 contributing to the `rulec` crate, the rule compiler for public
 signature rules: it unpacks ET Open and SigmaHQ rule sets, converts them
 into one Sigma-based format, compiles them with vectorscan and matches
-them against raw events, for REview and Hog alike. Planned in Rust.
-Read it before generating code.
+them against raw events, for REview and Hog alike. It is one Rust
+library crate at the repository root, which builds vectorscan from
+source through `vectorscan-rs` and takes the raw event types from
+`giganto-client`. Read it before generating code.
 
 <!-- BEGIN shared:workflow -->
 ## Branching and pushing
@@ -547,13 +549,41 @@ Where the crate handles key material or secrets:
 
 ## Validation
 
-- CI runs two jobs. `Markdown` runs `markdownlint-cli2` with no glob
-  of its own, so the root `.markdownlint-cli2.yaml` alone decides which
-  files are linted, then the shared instruction-block drift check,
-  which fails when the generated regions of this file stop matching the
-  release `.agent-instructions.toml` pins. `CI Gate` fails unless every
-  other job passed or was skipped. Run `markdownlint-cli2`, with no
+- `Markdown` runs `markdownlint-cli2` with no glob of its own, so the
+  root `.markdownlint-cli2.yaml` alone decides which files are linted,
+  then the shared instruction-block drift check, which fails when the
+  generated regions of this file stop matching the release
+  `.agent-instructions.toml` pins. Run `markdownlint-cli2`, with no
   arguments, locally before pushing a change to a Markdown file.
-- There is no Rust code yet, so there are no `cargo fmt` or
-  `cargo clippy` invocations. The pull request that adds the first crate
-  adds its CI jobs and names their exact invocations here.
+- Four Rust jobs run these commands, and the same commands must pass
+  locally before pushing a change to Rust code or `Cargo.toml`:
+  - `Rust format`:
+
+    ```sh
+    cargo fmt -- --check --config group_imports=StdExternalCrate
+    ```
+
+  - `Rust clippy`:
+
+    ```sh
+    cargo clippy --all-targets -- -D warnings
+    ```
+
+  - `Rust test`:
+
+    ```sh
+    cargo test
+    ```
+
+  - `Rust doc`:
+
+    ```sh
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+    ```
+
+  The crate has no features of its own, so `--all-targets` alone covers
+  every configuration clippy has to lint.
+- Every Rust job but `Rust format` compiles vectorscan from source, which
+  needs CMake and Boost's headers; CI installs `libboost-dev` first.
+  `README.md` says how to install both locally.
+- `CI Gate` fails unless every other job passed or was skipped.
