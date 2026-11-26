@@ -12,8 +12,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && '-dispatch' || (github.run_attempt != '1' && format('-rerun-{0}', github.run_id) || '') }}
   cancel-in-progress: true
 
-# Read-only. The lint reads the checkout, and the drift check reads the
-# pin and the upstream release.
+# Read-only. The lint and the Rust jobs read the checkout, and the drift
+# check reads the pin and the upstream release.
 permissions:
   contents: read
 
@@ -46,11 +46,66 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: aicers/agent-instructions/check-drift@main
 
+  # The Rust jobs below that compile the crate install Boost first:
+  # vectorscan-rs builds its vendored vectorscan from source with CMake,
+  # which `ubuntu-latest` has, and Boost's headers, which it does not.
+  rust-fmt:
+    name: Rust format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt
+        run: cargo fmt -- --check --config group_imports=StdExternalCrate
+
+  rust-clippy:
+    name: Rust clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install vectorscan build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libboost-dev
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  rust-test:
+    name: Rust test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install vectorscan build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libboost-dev
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        run: cargo test
+
+  rust-doc:
+    name: Rust doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install vectorscan build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libboost-dev
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features
+
   gate:
     name: CI Gate
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [markdown]
+    needs: [markdown, rust-fmt, rust-clippy, rust-test, rust-doc]
     if: ${{ always() }}
     steps:
       - name: Assert every job passed or was skipped

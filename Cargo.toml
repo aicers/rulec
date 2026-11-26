@@ -1,0 +1,11 @@
+[package]
+name = "rulec"
+version = "0.1.0"
+edition = "2024"
+description = "Rule compiler for public signature rules, built on vectorscan"
+license = "Apache-2.0"
+repository = "https://github.com/aicers/rulec"
+
+[dependencies]
+giganto-client = { git = "https://github.com/aicers/giganto-client.git", tag = "0.31.0" }
+vectorscan-rs = "0.0.6"
