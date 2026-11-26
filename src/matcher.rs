@@ -267,16 +267,29 @@ impl<'a, 'e> Context<'a, 'e> {
                 let other_missing = inner.iter().any(
                     |t| matches!(t, CTest::FieldRef { other, .. } if self.values(other).is_empty()),
                 );
+                // A value counts only if it reads as what every listed
+                // value compares — a number, an address — for a value
+                // that does not read is false to each of them, not unequal.
                 !other_missing
-                    && values
-                        .iter()
-                        .enumerate()
-                        .any(|(i, v)| !inner.iter().any(|t| self.value_holds(t, i, v)))
+                    && values.iter().enumerate().any(|(i, v)| {
+                        inner.iter().all(|t| Self::reads_as(t, v))
+                            && !inner.iter().any(|t| self.value_holds(t, i, v))
+                    })
             }
             test => values
                 .iter()
                 .enumerate()
                 .any(|(i, v)| self.value_holds(test, i, v)),
+        }
+    }
+
+    /// Returns whether `value` reads as the type `test` compares; only a
+    /// numeric or an address test needs one.
+    fn reads_as(test: &CTest, value: &FieldValue<'_>) -> bool {
+        match test {
+            CTest::Num(..) => value.as_int().is_some(),
+            CTest::Cidr(_) | CTest::HomeNet => value.as_addr().is_some(),
+            _ => true,
         }
     }
 

@@ -16,6 +16,11 @@ use yaml_rust2::{
 const BYTES_TAG: &str = "bytes";
 /// The handle of the tags the YAML core schema defines (`!!str`, ...).
 const CORE_TAG_HANDLE: &str = "tag:yaml.org,2002:";
+/// The most weight (see [`Node::weight`]) the aliases of one document may
+/// copy in all. An alias copies the node its anchor names, so a chain of
+/// anchors each referring to the one before several times grows a short
+/// text into a tree exponentially large; this bounds that growth.
+const MAX_ALIAS_WEIGHT: usize = 1 << 20;
 
 /// One node of a YAML document.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +39,22 @@ pub(crate) enum Node {
 }
 
 impl Node {
+    /// Returns a measure of the memory the node takes: one for each node,
+    /// plus the bytes of its text — scalars and mapping keys.
+    fn weight(&self) -> usize {
+        match self {
+            Self::Null | Self::Bool(_) | Self::Int(_) => 1,
+            Self::Float(s) | Self::Str(s) => 1 + s.len(),
+            Self::Bytes(b) => 1 + b.len(),
+            Self::Seq(items) => items
+                .iter()
+                .fold(1_usize, |sum, item| sum.saturating_add(item.weight())),
+            Self::Map(entries) => entries.iter().fold(1_usize, |sum, (key, value)| {
+                sum.saturating_add(key.len()).saturating_add(value.weight())
+            }),
+        }
+    }
+
     /// Returns a short name of the node's type, for error messages.
     pub(crate) fn type_name(&self) -> &'static str {
         match self {
@@ -121,7 +142,10 @@ enum Frame {
 struct Builder {
     docs: Vec<Node>,
     stack: Vec<Frame>,
-    anchors: HashMap<usize, Node>,
+    /// The anchored nodes, with their weight.
+    anchors: HashMap<usize, (Node, usize)>,
+    /// The weight the aliases have copied so far.
+    alias_weight: usize,
     error: Option<String>,
 }
 
@@ -194,7 +218,8 @@ impl Builder {
 
     fn insert(&mut self, node: Node, anchor: usize) {
         if anchor > 0 {
-            self.anchors.insert(anchor, node.clone());
+            let weight = node.weight();
+            self.anchors.insert(anchor, (node.clone(), weight));
         }
         let error = match self.stack.last_mut() {
             None => {
@@ -254,8 +279,20 @@ impl MarkedEventReceiver for Builder {
             | Event::StreamEnd
             | Event::DocumentStart
             | Event::DocumentEnd => {}
-            Event::Alias(id) => match self.anchors.get(&id).cloned() {
-                Some(node) => self.insert(node, 0),
+            Event::Alias(id) => match self.anchors.get(&id) {
+                Some((node, weight)) => {
+                    let total = self.alias_weight.saturating_add(*weight);
+                    if total > MAX_ALIAS_WEIGHT {
+                        self.fail(format!(
+                            "aliases expand the document past {MAX_ALIAS_WEIGHT} units \
+                             (nodes and text bytes)"
+                        ));
+                    } else {
+                        self.alias_weight = total;
+                        let node = node.clone();
+                        self.insert(node, 0);
+                    }
+                }
                 None => self.fail("an alias refers to an unknown anchor".to_string()),
             },
             Event::Scalar(value, style, anchor, tag) => {
@@ -313,6 +350,29 @@ mod tests {
                 ("g".to_string(), Node::Str(String::new())),
             ])
         );
+    }
+
+    #[test]
+    fn aliases_expand_within_a_budget() {
+        let node = load("a: &x [1, 2]\nb: *x\n").unwrap();
+        let pair = Node::Seq(vec![Node::Int(1), Node::Int(2)]);
+        assert_eq!(
+            node,
+            Node::Map(vec![
+                ("a".to_string(), pair.clone()),
+                ("b".to_string(), pair)
+            ])
+        );
+
+        // Each level refers to the one before ten times: 10^9 leaves.
+        let mut text = "l0: &l0 [x, x, x, x, x, x, x, x, x, x]\n".to_string();
+        for level in 1..=9 {
+            let prev = level - 1;
+            let refs = vec![format!("*l{prev}"); 10].join(", ");
+            text.push_str(&format!("l{level}: &l{level} [{refs}]\n"));
+        }
+        let error = load(&text).unwrap_err();
+        assert!(error.contains("aliases expand"), "{error}");
     }
 
     #[test]

@@ -185,6 +185,15 @@ fn rejects_format_errors() {
     assert_format_error(read_selection(
         "        '|all':\n            - a\n            - b\n",
     ));
+    // A position modifier before a Base64 encoding hands it a wildcard.
+    for key in [
+        "body|contains|base64",
+        "body|startswith|base64",
+        "body|endswith|base64offset",
+    ] {
+        assert_format_error(read_selection(&format!("        {key}: 'abc'\n")));
+    }
+    assert!(read_selection("        body|base64|contains: 'abc'\n").is_ok());
     // `logsource` with `product` or `service`.
     for extra in ["    product: windows\n", "    service: sshd\n"] {
         let text = rule_text("r", "    sel:\n        uri: a\n    condition: sel\n").replace(

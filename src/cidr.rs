@@ -66,16 +66,20 @@ impl Cidr {
 
     /// Returns whether `addr` lies in the range.
     ///
-    /// An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is compared as the
-    /// IPv4 address it maps.
+    /// An IPv6 range compares the address as it is. An IPv4 range compares
+    /// an IPv4 address, and an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`)
+    /// as the IPv4 address it maps; it contains no other IPv6 address.
     #[must_use]
     pub fn contains(&self, addr: IpAddr) -> bool {
-        match (self.network, addr.to_canonical()) {
-            (IpAddr::V4(_), a @ IpAddr::V4(_)) | (IpAddr::V6(_), a @ IpAddr::V6(_)) => {
-                Self::new(a, self.prefix).is_ok_and(|masked| masked.network == self.network)
-            }
-            _ => false,
-        }
+        let addr = match (self.network, addr) {
+            (IpAddr::V4(_), IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+                Some(v4) => IpAddr::V4(v4),
+                None => return false,
+            },
+            (IpAddr::V6(_), IpAddr::V4(_)) => return false,
+            (_, addr) => addr,
+        };
+        Self::new(addr, self.prefix).is_ok_and(|masked| masked.network == self.network)
     }
 }
 
@@ -145,6 +149,16 @@ mod tests {
         let v6: Cidr = "2001:db8::/32".parse().unwrap();
         assert!(v6.contains("2001:db8:1::1".parse().unwrap()));
         assert!(!v6.contains("2001:db9::1".parse().unwrap()));
+        assert!(!v6.contains("10.0.0.1".parse().unwrap()));
+
+        // An IPv6 range of IPv4-mapped addresses holds those addresses.
+        let mapped: Cidr = "::ffff:192.0.2.0/120".parse().unwrap();
+        assert!(mapped.contains("::ffff:192.0.2.1".parse().unwrap()));
+        assert!(!mapped.contains("::ffff:192.0.3.1".parse().unwrap()));
+        assert!(!mapped.contains("192.0.2.1".parse().unwrap()));
+        let all_v6: Cidr = "::/0".parse().unwrap();
+        assert!(all_v6.contains("::ffff:10.0.0.1".parse().unwrap()));
+        assert!(!all_v6.contains("10.0.0.1".parse().unwrap()));
 
         for bad in [
             "10.0.0.0/33",

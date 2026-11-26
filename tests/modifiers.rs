@@ -178,11 +178,25 @@ fn neq() {
         num,
         &TestEvent::http().text("status", &["200"])
     ));
-    // A value that does not read as a number or an address is not equal
-    // to the listed values.
-    assert!(selection_matches(
+    // A value that does not read as a number or an address makes `neq`
+    // false, as it does the comparison it negates.
+    assert!(!selection_matches(
         num,
         &TestEvent::http().text("status", &["abc"])
+    ));
+    assert!(selection_matches(
+        num,
+        &TestEvent::http().text("status", &["abc", "404"])
+    ));
+    // Listed beside a string, an integer still needs a number.
+    let mixed = "        status|neq:\n            - 200\n            - 'abc'\n";
+    assert!(selection_matches(
+        mixed,
+        &TestEvent::http().text("status", &["404"])
+    ));
+    assert!(!selection_matches(
+        mixed,
+        &TestEvent::http().text("status", &["xyz"])
     ));
     let net = "        resp_addr|cidr|neq: 10.0.0.0/8\n";
     assert!(selection_matches(
@@ -193,9 +207,13 @@ fn neq() {
         net,
         &TestEvent::http().addr("resp_addr", "10.1.2.3")
     ));
-    assert!(selection_matches(
+    assert!(!selection_matches(
         net,
         &TestEvent::http().text("resp_addr", &["host"])
+    ));
+    assert!(selection_matches(
+        net,
+        &TestEvent::http().text("resp_addr", &["host", "192.0.2.1"])
     ));
 }
 
@@ -287,6 +305,37 @@ fn utf16_family() {
     assert!(selection_matches(
         wide_b64,
         &TestEvent::http().text("f", &["..YwBtAGQA.."])
+    ));
+}
+
+#[test]
+fn modifiers_apply_in_the_order_written() {
+    // `utf16` puts its BOM before the value it encodes: before the `*` that
+    // `contains` added when `contains` comes first, after it otherwise.
+    let bom_then_any = "        f|contains|utf16: 'cmd'\n";
+    let any_then_bom = "        f|utf16|contains: 'cmd'\n";
+    let bom_first = b"\xff\xfex\x00c\x00m\x00d\x00";
+    let bom_inside = b"x\x00\xff\xfec\x00m\x00d\x00";
+    assert!(selection_matches(
+        bom_then_any,
+        &TestEvent::http().bytes("f", bom_first)
+    ));
+    assert!(!selection_matches(
+        bom_then_any,
+        &TestEvent::http().bytes("f", bom_inside)
+    ));
+    assert!(selection_matches(
+        any_then_bom,
+        &TestEvent::http().bytes("f", bom_inside)
+    ));
+    assert!(!selection_matches(
+        any_then_bom,
+        &TestEvent::http().bytes("f", bom_first)
+    ));
+    // `startswith` before `wide` keeps its `*` through the encoding.
+    assert!(selection_matches(
+        "        f|startswith|wide: 'cmd'\n",
+        &TestEvent::http().bytes("f", b"c\x00m\x00d\x00 \x00")
     ));
 }
 

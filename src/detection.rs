@@ -668,25 +668,25 @@ fn plain_tests(
                     .map(|pieces| utf16(key, &pieces, *m))
                     .collect::<Result<_, _>>()?
             }
+            Modifier::Contains | Modifier::StartsWith | Modifier::EndsWith => alternatives
+                .into_iter()
+                .map(|mut pieces| {
+                    if *m != Modifier::StartsWith {
+                        pieces.insert(0, Piece::AnyStr);
+                    }
+                    if *m != Modifier::EndsWith {
+                        pieces.push(Piece::AnyStr);
+                    }
+                    pieces
+                })
+                .collect(),
             _ => alternatives,
         };
     }
 
-    let position = mods.iter().find(|m| m.is_position()).copied();
     Ok(alternatives
         .into_iter()
-        .map(|mut pieces| {
-            match position {
-                Some(Modifier::Contains) => {
-                    pieces.insert(0, Piece::AnyStr);
-                    pieces.push(Piece::AnyStr);
-                }
-                Some(Modifier::StartsWith) => pieces.push(Piece::AnyStr),
-                Some(Modifier::EndsWith) => pieces.insert(0, Piece::AnyStr),
-                _ => {}
-            }
-            finish(pieces, cased)
-        })
+        .map(|pieces| finish(pieces, cased))
         .collect())
 }
 
@@ -849,7 +849,9 @@ fn expand_literals(key: &str, values: Vec<Vec<Piece>>) -> Result<Vec<Vec<u8>>, R
                 }
                 Piece::AnyStr | Piece::AnyChar => {
                     return Err(format_err(format!(
-                        "`{key}`: a value with wildcards cannot be Base64-encoded"
+                        "`{key}`: a value with wildcards cannot be Base64-encoded \
+                         (a `contains`, `startswith` or `endswith` before the encoding \
+                         adds one)"
                     )));
                 }
             }

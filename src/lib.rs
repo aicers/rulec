@@ -26,7 +26,9 @@
 //! `1 of` and `all of` over an identifier pattern or `them`. A list of
 //! conditions is their OR. A list of values without a field name (a
 //! keyword search) is rejected: a converter decides which field such a
-//! value searches and writes it as a field condition.
+//! value searches and writes it as a field condition. YAML aliases are
+//! read, up to a bound on what they copy in all (2^20 nodes and text
+//! bytes); a rule past it is rejected as malformed.
 //!
 //! `logsource` names one kind of raw event: its `category` is the name
 //! `giganto-client`'s `RawEventKind` parses (`http`, `tls`,
@@ -73,14 +75,20 @@
 //!
 //! Some combinations are pinned down:
 //!
-//! - `contains`, `startswith` and `endswith` apply after the encoding
-//!   modifiers, wherever they stand in the chain; the encodings apply in
-//!   the order written. A value with wildcards cannot be Base64-encoded,
-//!   and `?` cannot be encoded in UTF-16.
+//! - The modifiers that transform a value — `contains`, `startswith`,
+//!   `endswith` and the encodings — apply in the order written, as Sigma
+//!   2.1 defines. `contains`, `startswith` and `endswith` add a `*`, so
+//!   `utf16|contains` finds the encoded value with its BOM anywhere, and
+//!   `contains|utf16` finds it anywhere after a BOM at the start. A value
+//!   with wildcards cannot be Base64-encoded — `contains|base64` is
+//!   rejected, `base64|contains` is not — and `?` cannot be encoded in
+//!   UTF-16.
 //! - `all` needs a list of values and does not combine with `neq`.
 //! - `neq` holds when the field has a value that none of the listed values
-//!   matches. A value that does not read as a number, for an integer, or
-//!   as an address, for `cidr|neq`, is such a value.
+//!   matches. Where a listed value compares a number, for an integer, or
+//!   an address, for `cidr|neq`, a field value must read as one to count:
+//!   a value that does not read makes `neq` false, as it does the
+//!   comparison `neq` negates.
 //! - `fieldref` takes `neq`, `cased` and `all`; `cidr` takes `neq`.
 //! - `exists` stands alone; `null` takes no modifier and is not listed
 //!   with other values.
@@ -148,7 +156,9 @@
 //!   as one makes them false.
 //! - **Addresses.** `cidr` takes an address value as it is and reads a byte
 //!   value as an IP address; a value that does not read as one makes it
-//!   false.
+//!   false. An IPv4 range also holds the IPv4-mapped IPv6 form
+//!   (`::ffff:a.b.c.d`) of its addresses; an IPv6 range compares an IPv6
+//!   address as it is, and holds no IPv4 address.
 //! - **Conditions that match an empty value.** A plain, `contains`,
 //!   `startswith` or `endswith` condition whose value is `''` or only `*`
 //!   is checked without vectorscan, as Sigma defines it.
