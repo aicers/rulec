@@ -467,6 +467,21 @@ mod tests {
     }
 
     #[test]
+    fn escapes_are_decoded_once() {
+        // `%25` is `%`, and the escape it leaves is not decoded again, in
+        // the path or in the query.
+        assert_eq!(uri(b"/a%2541b%252fc"), b"/a%41b%2fc");
+        assert_eq!(uri(b"/a?x=%2541&y=%252f"), b"/a?x=%41&y=%2f");
+        assert_eq!(uri(b"/%2541?%2541"), b"/%41?%41");
+    }
+
+    #[test]
+    fn a_raw_nul_does_not_end_the_path() {
+        assert_eq!(uri(b"/a\x00b/c"), b"/a\x00b/c");
+        assert_eq!(uri(b"/a\x00/b?q"), b"/a\x00/b?q");
+    }
+
+    #[test]
     fn u_escapes_in_the_path() {
         assert_eq!(uri(b"/%u0041"), b"/A");
         assert_eq!(uri(b"/%U0041"), b"/A");
@@ -554,6 +569,16 @@ mod tests {
     }
 
     #[test]
+    fn query_bytes_are_kept() {
+        // Valid and invalid UTF-8, raw and decoded, stay as they are: no
+        // best fit, no `?` for a byte that cannot start a character.
+        assert_eq!(
+            uri(b"/p?a=\xc3\xa9%c3%a9&b=\xe4\xb8\x80&c=\xff%ff\xc3A&d=\xe4\xb8"),
+            b"/p?a=\xc3\xa9\xc3\xa9&b=\xe4\xb8\x80&c=\xff\xff\xc3A&d=\xe4\xb8"
+        );
+    }
+
+    #[test]
     fn absolute_and_odd_uris() {
         assert_eq!(uri(b"http://Example.com:80/a/../b?c"), b"/b?c");
         assert_eq!(uri(b"http://user:pw@host"), b"");
@@ -569,6 +594,30 @@ mod tests {
         assert_eq!(uri(b"/a b  "), b"/a b");
         assert_eq!(uri(b""), b"");
         assert_eq!(uri(b"   "), b"");
+    }
+
+    #[test]
+    fn an_authority_followed_by_a_fragment() {
+        // The authority ends at `#`, and the fragment is kept with it.
+        assert_eq!(uri(b"http://host#frag"), b"#frag");
+        assert_eq!(uri(b"http://user:pw@host:80#f%41"), b"#fA");
+        assert_eq!(uri(b"http://host#"), b"#");
+    }
+
+    #[test]
+    fn a_leading_slash_is_no_scheme() {
+        // A URI starting with `/` has no scheme, so its colons stay.
+        assert_eq!(uri(b"/a:b/c"), b"/a:b/c");
+        assert_eq!(uri(b"/x?y=1:2"), b"/x?y=1:2");
+        assert_eq!(uri(b"/http://host/a"), b"/http:/host/a");
+    }
+
+    #[test]
+    fn a_leading_double_slash_is_no_authority() {
+        // Without a scheme, `//host` is path, its separators compressed.
+        assert_eq!(uri(b"//host/path"), b"/host/path");
+        assert_eq!(uri(b"//host//a\\b?q"), b"/host/a/b?q");
+        assert_eq!(uri(b"//host"), b"/host");
     }
 
     #[test]
