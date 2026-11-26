@@ -1,6 +1,8 @@
 //! Reads the `detection` section of a rule: search identifiers, field
 //! conditions with their modifiers, and the condition.
 
+use std::collections::BTreeSet;
+
 use crate::{
     cidr::Cidr,
     condition,
@@ -35,8 +37,10 @@ fn format_err(message: impl Into<String>) -> ReadError {
     ReadError::Format(message.into())
 }
 
-/// Reads the `detection` mapping into one expression.
-pub(crate) fn parse(detection: &Node) -> Result<Expr, ReadError> {
+/// Reads the `detection` mapping into one expression, and returns with it
+/// every field name its search identifiers use, sorted and without
+/// repeats — those of identifiers the condition leaves out included.
+pub(crate) fn parse(detection: &Node) -> Result<(Expr, Vec<String>), ReadError> {
     let Node::Map(entries) = detection else {
         return Err(format_err("`detection` is not a mapping"));
     };
@@ -83,7 +87,12 @@ pub(crate) fn parse(detection: &Node) -> Result<Expr, ReadError> {
             "the detection nests `and`, `or` and `not` more than {MAX_DEPTH} deep"
         )));
     }
-    Ok(expr)
+    let mut fields = BTreeSet::new();
+    for (_, search) in &searches {
+        search.field_names(&mut fields);
+    }
+    let fields = fields.into_iter().map(str::to_string).collect();
+    Ok((expr, fields))
 }
 
 /// Rejects a detection whose `expand` values name a placeholder other than

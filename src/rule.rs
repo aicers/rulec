@@ -33,6 +33,10 @@ pub struct Rule {
     references: Vec<String>,
     kind: RawEventKind,
     pub(crate) detection: Expr,
+    /// Every field name the search identifiers of the detection use,
+    /// sorted and without repeats, including those of identifiers the
+    /// condition leaves out of [`Rule::detection`].
+    pub(crate) fields: Vec<String>,
 }
 
 /// Why a rule could not be read.
@@ -186,7 +190,7 @@ impl Rule {
         let kind = logsource(get("logsource"))?;
         let detection = get("detection")
             .ok_or_else(|| ReadError::Format("the rule has no `detection`".to_string()))?;
-        let detection = detection::parse(detection)?;
+        let (detection, fields) = detection::parse(detection)?;
 
         Ok(Self {
             source,
@@ -205,6 +209,7 @@ impl Rule {
             references,
             kind,
             detection,
+            fields,
         })
     }
 

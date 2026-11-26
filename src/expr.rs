@@ -1,6 +1,8 @@
 //! The parsed form of a rule's detection: a boolean expression over field
 //! conditions.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::cidr::Cidr;
@@ -58,6 +60,29 @@ impl Expr {
             Expr::Not(item) => item.for_each_leaf(f),
             Expr::Leaf(leaf) => f(leaf),
         }
+    }
+
+    /// Adds every field name the expression uses to `out`: the field of
+    /// each field condition and the field each `fieldref` refers to.
+    pub(crate) fn field_names<'a>(&'a self, out: &mut BTreeSet<&'a str>) {
+        fn referenced<'a>(test: &'a Test, out: &mut BTreeSet<&'a str>) {
+            match test {
+                Test::FieldRef { other, .. } => {
+                    out.insert(other);
+                }
+                Test::Neq(inner) => {
+                    for test in inner {
+                        referenced(test, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.for_each_leaf(&mut |leaf| {
+            out.insert(leaf.field.as_str());
+            referenced(&leaf.test, out);
+        });
     }
 }
 
