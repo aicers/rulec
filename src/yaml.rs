@@ -21,7 +21,8 @@ const CORE_TAG_HANDLE: &str = "tag:yaml.org,2002:";
 /// anchors each referring to the one before several times grows a short
 /// text into a tree exponentially large; this bounds that growth.
 const MAX_ALIAS_WEIGHT: usize = 1 << 20;
-/// The most sequences and mappings a document may nest. A Sigma rule
+/// The most sequences and mappings a document may nest, counting those an
+/// alias copies in as well as those the text spells out. A Sigma rule
 /// needs a handful; the bound keeps every function that walks a [`Node`]
 /// recursively, `Drop` included, from running out of stack.
 const MAX_COLLECTION_DEPTH: usize = 64;
@@ -144,12 +145,28 @@ enum Frame {
     Seq {
         items: Vec<Node>,
         anchor: usize,
+        /// The most collections any item nests (see [`Anchored::height`]).
+        height: usize,
     },
     Map {
         entries: Vec<(String, Node)>,
         key: Option<String>,
         anchor: usize,
+        /// The most collections any value nests (see [`Anchored::height`]).
+        height: usize,
     },
+}
+
+/// A node an anchor names, with what an alias to it must be checked
+/// against.
+struct Anchored {
+    node: Node,
+    /// See [`Node::weight`].
+    weight: usize,
+    /// The sequences and mappings the node nests, itself included: zero
+    /// for a scalar. An alias puts that many levels below where it stands,
+    /// however shallow its own text is.
+    height: usize,
 }
 
 /// Receives parser events and builds [`Node`] trees.
@@ -157,8 +174,8 @@ enum Frame {
 struct Builder {
     docs: Vec<Node>,
     stack: Vec<Frame>,
-    /// The anchored nodes, with their weight.
-    anchors: HashMap<usize, (Node, usize)>,
+    /// The anchored nodes.
+    anchors: HashMap<usize, Anchored>,
     /// The weight the aliases have copied so far.
     alias_weight: usize,
     error: Option<String>,
@@ -231,22 +248,40 @@ impl Builder {
         }
     }
 
-    fn insert(&mut self, node: Node, anchor: usize) {
+    /// Puts `node`, which nests `height` collections, into the collection
+    /// being built, or makes it a document.
+    fn insert(&mut self, node: Node, height: usize, anchor: usize) {
         if anchor > 0 {
             let weight = node.weight();
-            self.anchors.insert(anchor, (node.clone(), weight));
+            self.anchors.insert(
+                anchor,
+                Anchored {
+                    node: node.clone(),
+                    weight,
+                    height,
+                },
+            );
         }
         let error = match self.stack.last_mut() {
             None => {
                 self.docs.push(node);
                 None
             }
-            Some(Frame::Seq { items, .. }) => {
+            Some(Frame::Seq {
+                items, height: max, ..
+            }) => {
+                *max = (*max).max(height);
                 items.push(node);
                 None
             }
-            Some(Frame::Map { entries, key, .. }) => match key.take() {
+            Some(Frame::Map {
+                entries,
+                key,
+                height: max,
+                ..
+            }) => match key.take() {
                 Some(k) => {
+                    *max = (*max).max(height);
                     if entries.iter().any(|(existing, _)| *existing == k) {
                         Some(format!("duplicate key `{k}` in a mapping"))
                     } else {
@@ -295,24 +330,33 @@ impl Builder {
             | Event::DocumentStart
             | Event::DocumentEnd => {}
             Event::Alias(id) => match self.anchors.get(&id) {
-                Some((node, weight)) => {
-                    let total = self.alias_weight.saturating_add(*weight);
+                Some(anchored) => {
+                    let total = self.alias_weight.saturating_add(anchored.weight);
+                    // Anchors chained through aliases nest deeper than any
+                    // one of them is written, so the alias's own place in
+                    // the text says nothing of the depth it brings.
+                    let depth = self.stack.len().saturating_add(anchored.height);
                     if total > MAX_ALIAS_WEIGHT {
                         self.fail(format!(
                             "aliases expand the document past {MAX_ALIAS_WEIGHT} units \
                              (nodes and text bytes)"
                         ));
+                    } else if depth > MAX_COLLECTION_DEPTH {
+                        self.fail(format!(
+                            "sequences and mappings nest more than {MAX_COLLECTION_DEPTH} deep \
+                             once aliases are expanded"
+                        ));
                     } else {
                         self.alias_weight = total;
-                        let node = node.clone();
-                        self.insert(node, 0);
+                        let (node, height) = (anchored.node.clone(), anchored.height);
+                        self.insert(node, height, 0);
                     }
                 }
                 None => self.fail("an alias refers to an unknown anchor".to_string()),
             },
             Event::Scalar(value, style, anchor, tag) => {
                 match Self::scalar(value, style, tag.as_ref()) {
-                    Ok(node) => self.insert(node, anchor),
+                    Ok(node) => self.insert(node, 0, anchor),
                     Err(e) => self.fail(e),
                 }
             }
@@ -330,6 +374,7 @@ impl Builder {
                 self.stack.push(Frame::Seq {
                     items: Vec::new(),
                     anchor,
+                    height: 0,
                 });
             }
             Event::MappingStart(anchor, tag) => {
@@ -340,13 +385,21 @@ impl Builder {
                     entries: Vec::new(),
                     key: None,
                     anchor,
+                    height: 0,
                 });
             }
             Event::SequenceEnd | Event::MappingEnd => match self.stack.pop() {
-                Some(Frame::Seq { items, anchor }) => self.insert(Node::Seq(items), anchor),
+                Some(Frame::Seq {
+                    items,
+                    anchor,
+                    height,
+                }) => self.insert(Node::Seq(items), height + 1, anchor),
                 Some(Frame::Map {
-                    entries, anchor, ..
-                }) => self.insert(Node::Map(entries), anchor),
+                    entries,
+                    anchor,
+                    height,
+                    ..
+                }) => self.insert(Node::Map(entries), height + 1, anchor),
                 None => self.fail("unbalanced YAML collection".to_string()),
             },
         }
@@ -436,6 +489,37 @@ mod tests {
         assert!(error.contains("nest more than"), "{error}");
         // The scanner refuses deep flow collections before the builder.
         assert!(load(&flow(100_000)).is_err());
+    }
+
+    #[test]
+    fn nesting_through_aliases_is_bounded() {
+        // Each anchor wraps the one before in `wrap` lists, so anchor `n`
+        // nests `wrap * n` collections while no line of the text nests more
+        // than `wrap + 1`, the document's mapping included.
+        let chain = |wrap: usize, links: usize| {
+            let mut text = "a0: &a0 x\n".to_string();
+            for link in 1..=links {
+                let prev = link - 1;
+                let open = "[".repeat(wrap);
+                let close = "]".repeat(wrap);
+                text.push_str(&format!("a{link}: &a{link} {open}*a{prev}{close}\n"));
+            }
+            text
+        };
+        // 1 + 9 * 7 = 64 levels.
+        assert!(load(&chain(9, 7)).is_ok());
+        let error = load(&chain(9, 8)).unwrap_err();
+        assert!(error.contains("once aliases are expanded"), "{error}");
+        // A chain whose expansion is far deeper than a recursive walk of
+        // the tree could survive.
+        let error = load(&chain(60, 190)).unwrap_err();
+        assert!(error.contains("once aliases are expanded"), "{error}");
+        // A shallow anchor copied in deep is counted where it lands.
+        let deep = format!("a: &a [x]\nb: {}*a{}\n", "[".repeat(62), "]".repeat(62));
+        assert!(load(&deep).is_ok());
+        let deeper = format!("a: &a [x]\nb: {}*a{}\n", "[".repeat(63), "]".repeat(63));
+        let error = load(&deeper).unwrap_err();
+        assert!(error.contains("once aliases are expanded"), "{error}");
     }
 
     #[test]
