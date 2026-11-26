@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use yaml_rust2::{
     Yaml,
-    parser::{Event, MarkedEventReceiver, Parser, Tag},
-    scanner::{Marker, TScalarStyle},
+    parser::{Event, Parser, Tag},
+    scanner::TScalarStyle,
 };
 
 /// The local tag that marks a value written as bytes.
@@ -21,6 +21,10 @@ const CORE_TAG_HANDLE: &str = "tag:yaml.org,2002:";
 /// anchors each referring to the one before several times grows a short
 /// text into a tree exponentially large; this bounds that growth.
 const MAX_ALIAS_WEIGHT: usize = 1 << 20;
+/// The most sequences and mappings a document may nest. A Sigma rule
+/// needs a handful; the bound keeps every function that walks a [`Node`]
+/// recursively, `Drop` included, from running out of stack.
+const MAX_COLLECTION_DEPTH: usize = 64;
 
 /// One node of a YAML document.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,7 +78,18 @@ impl Node {
 pub(crate) fn load(text: &str) -> Result<Node, String> {
     let mut builder = Builder::default();
     let mut parser = Parser::new_from_str(text);
-    parser.load(&mut builder, true).map_err(|e| e.to_string())?;
+    // `Parser::load` recurses once per nested collection, so a deeply
+    // nested document would overflow the stack before the builder could
+    // refuse it. Pulling the events one by one keeps reading iterative and
+    // stops it at the builder's first error.
+    loop {
+        let (event, _mark) = parser.next_token().map_err(|e| e.to_string())?;
+        let end = event == Event::StreamEnd;
+        builder.on_event(event);
+        if end || builder.error.is_some() {
+            break;
+        }
+    }
     if let Some(error) = builder.error {
         return Err(error);
     }
@@ -268,8 +283,8 @@ impl Builder {
     }
 }
 
-impl MarkedEventReceiver for Builder {
-    fn on_event(&mut self, ev: Event, _mark: Marker) {
+impl Builder {
+    fn on_event(&mut self, ev: Event) {
         if self.error.is_some() {
             return;
         }
@@ -300,6 +315,13 @@ impl MarkedEventReceiver for Builder {
                     Ok(node) => self.insert(node, anchor),
                     Err(e) => self.fail(e),
                 }
+            }
+            Event::SequenceStart(..) | Event::MappingStart(..)
+                if self.stack.len() >= MAX_COLLECTION_DEPTH =>
+            {
+                self.fail(format!(
+                    "sequences and mappings nest more than {MAX_COLLECTION_DEPTH} deep"
+                ));
             }
             Event::SequenceStart(anchor, tag) => {
                 if let Err(e) = Self::check_collection_tag(tag.as_ref(), "seq") {
@@ -396,6 +418,24 @@ mod tests {
         assert!(load("a: 1\n---\nb: 2\n").is_err());
         assert!(load("a: [1\n").is_err());
         assert!(load("").is_err());
+    }
+
+    #[test]
+    fn nesting_is_bounded() {
+        let block = |depth: usize| format!("v:\n  {}x\n", "- ".repeat(depth));
+        let flow = |depth: usize| format!("v: {}x{}\n", "[".repeat(depth), "]".repeat(depth));
+        // The document's own mapping is one level.
+        assert!(load(&block(MAX_COLLECTION_DEPTH - 1)).is_ok());
+        assert!(load(&flow(MAX_COLLECTION_DEPTH - 1)).is_ok());
+        let error = load(&block(MAX_COLLECTION_DEPTH)).unwrap_err();
+        assert!(error.contains("nest more than"), "{error}");
+        assert!(load(&flow(MAX_COLLECTION_DEPTH)).is_err());
+
+        // Deep enough to overflow the stack of a recursive reader.
+        let error = load(&block(100_000)).unwrap_err();
+        assert!(error.contains("nest more than"), "{error}");
+        // The scanner refuses deep flow collections before the builder.
+        assert!(load(&flow(100_000)).is_err());
     }
 
     #[test]

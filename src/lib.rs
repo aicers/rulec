@@ -100,6 +100,9 @@
 //!   `condition` nests `not` and parentheses at most 64 deep; a rule past
 //!   either is rejected as malformed. The first bound keeps every rule a
 //!   rule bundle stores readable from it.
+//! - A rule's YAML nests sequences and mappings at most 64 deep, the
+//!   rule's own top-level mapping included; a rule past that is rejected
+//!   as malformed.
 //!
 //! ## Case
 //!

@@ -266,6 +266,30 @@ fn rejects_format_errors() {
 }
 
 #[test]
+fn rejects_deeply_nested_yaml() {
+    // A list nested far deeper than any rule needs, under a key reading
+    // ignores: rejected as malformed rather than overflowing the stack.
+    let deep = format!("ignored:\n  {}x\n", "- ".repeat(100_000));
+    let text = rule_text_with(
+        "deep",
+        "http",
+        &deep,
+        "    sel:\n        uri: a\n    condition: sel\n",
+    );
+    assert_format_error(Rule::from_yaml(&text));
+
+    // Nesting a rule actually uses still reads.
+    let shallow = format!("ignored:\n  {}x\n", "- ".repeat(32));
+    let text = rule_text_with(
+        "shallow",
+        "http",
+        &shallow,
+        "    sel:\n        uri: a\n    condition: sel\n",
+    );
+    assert!(Rule::from_yaml(&text).is_ok());
+}
+
+#[test]
 fn reads_non_utf8_bytes() {
     let sel = "        payload|contains: !bytes '\\xff\\xfeA'\n";
     let rule = read_selection(sel).unwrap();
