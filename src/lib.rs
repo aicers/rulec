@@ -19,7 +19,88 @@
 //! the normalization functions converters apply to patterns and the records
 //! to values ([`normalize_uri`], [`normalize_host`], [`decode_body`],
 //! [`join_cert_name`], [`join_header_names`], [`header_block`],
-//! [`split_ssh_banner`]). The converters themselves are not here yet.
+//! [`split_ssh_banner`]). ET Open bundles can be converted with
+//! [`convert_et_open`]; the SigmaHQ converter is not here yet.
+//!
+//! # ET Open conversion
+//!
+//! [`convert_et_open`] accepts the bytes of the Suricata 7.0.3 ET Open
+//! `emerging.rules.tar.gz`, an optional number from `version.txt` supplied
+//! by the caller, and a [`Blocklist`]. It performs no network access and
+//! returns a [`Conversion`]: catalog-checked, compiled rules and a summary.
+//! [`read_et_open_version`] reads the same source version without converting
+//! or compiling. Both APIs validate gzip/tar first, then require included
+//! rule files, then readable `metadata: updated_at YYYY_MM_DD` on an active
+//! rule. The latest such date supplies the order key, even when that rule
+//! cannot be converted. A supplied number is the display version; without
+//! one it is `upd-YYYY-MM-DD-<first 12 lowercase hex SHA-256 of the archive>`.
+//! The content digest covers included files' paths relative to `rules/`
+//! and their unchanged bytes, independently of archive ordering.
+//!
+//! Only regular `*.rules` files directly inside `rules/` are included
+//! (leading `./` is accepted). Retired rules, the IP reputation files
+//! `botcc`, `botcc.portgrouped`, `ciarmy`, `compromised`, `drop`, `dshield`,
+//! `tor`, and `threatview*` are excluded, as are comments and blank lines.
+//! Exclusions do not count as dropped rules. Continuations ending in `\`
+//! are joined and retain their first physical line number.
+//!
+//! Every dropped rule has exactly one reason, in this precedence order:
+//!
+//! 1. `blocklist`
+//! 2. `uncategorized`
+//! 3. `format_error`, `missing_attribute`
+//! 4. `needs_state`
+//! 5. `payload_or_packet_condition`
+//! 6. `unsupported_keyword:<name>`
+//! 7. `unsupported_buffer:<name>`
+//! 8. `raw_payload`
+//! 9. `mixed_kinds`
+//! 10. `mixed_directions`
+//! 11. `no_response_value`
+//! 12. `direction_mismatch`
+//! 13. `placeholder_value_missing`
+//! 14. `unsupported_regex` during conversion, then during compilation
+//!
+//! Constants for these keys are in [`reason`]. Prefix keys have exactly one
+//! colon and no spaces. Buffer names use the Suricata 7.0.3 dotted spelling,
+//! including buffers selected by old content modifiers or PCRE flags.
+//! For multiple unsupported keywords or buffers, the first occurrence wins.
+//! Dropped ids are decimal `sid`s; when no sid can be read, they are
+//! `<path relative to rules/>:<first line number, starting at 1>`, for
+//! example `emerging-dns.rules:42`. A missing sid is `missing_attribute`.
+//!
+//! Content literals are `!bytes`, with `cased` unless `nocase` was given,
+//! so literal `*`, `?`, and `%` never become Sigma wildcards. URI and host
+//! literals use [`normalize_uri`] and [`normalize_host`] on normalized
+//! fields; PCRE expressions remain unchanged. Relative/positional chains
+//! use byte regexes with scoped case and newline flags. Unsupported regexes
+//! are dropped rather than matched with a different engine. HOME_NET stays
+//! dynamic (`addr|expand|cidr: '%home_net%'`); other network and port
+//! variables use the Suricata 7.0.3 default configuration.
+//!
+//! The `references` attribute expands `reference:<type>,<value>` with the
+//! prefix from Suricata 7.0.3's built-in `etc/reference.config`, ignoring
+//! archive copies. For example `url,www.example.com/a` becomes
+//! `http://www.example.com/a`; unknown types remain `<type>,<value>`.
+//!
+//! Response rules using `http.header`, `http.header_names`, `http.cookie`,
+//! `http.content_type`, `http.connection`, or `http.protocol` are dropped as
+//! `no_response_value`: Suricata 7.0.3 registers both directions but the
+//! record exposes only request values. Other contradictory buffer
+//! directions are `direction_mismatch`. Response TLS and SSH buffers are
+//! supported. Direction-neutral buffers produce paired alternatives,
+//! each keeping that direction's fields with its address/port mapping.
+//! Transport headers retain their `proto` checks on buffer rules as well.
+//!
+//! `header_values_partly_missing` counts accepted rules whose `http.header`
+//! content literals (including those in regex chains) contain a header
+//! name followed by `:` and at least one more byte, when the name is not in
+//! [`HEADER_BLOCK_HEADERS`] ignoring ASCII case. The name is the run of
+//! non-whitespace, non-`:` bytes immediately before the colon. For example
+//! `X-Foo: bar` and `Cookie: a` count; `User-Agent: x` and `X-Foo:` do not.
+//! These rules are retained. Other partial-condition and unmapped-field
+//! counters are empty for ET Open. Compilation fills model counts,
+//! always-checked counts, elapsed time and database size in the summary.
 //!
 //! # Clumit Sigma
 //!
@@ -303,8 +384,10 @@ mod catalog;
 mod cidr;
 mod compile;
 mod condition;
+mod convert;
 mod derived;
 mod detection;
+mod et_open;
 mod event;
 mod expr;
 mod matcher;
@@ -322,10 +405,12 @@ pub use bundle::{BundleError, RuleBundle};
 pub use catalog::{FieldStatus, KindNotCataloged, catalog_fields, field_status, unknown_fields};
 pub use cidr::{Cidr, CidrParseError};
 pub use compile::{CompileError, CompileStats, CompiledRules, ExcludedRule, KindCount, compile};
+pub use convert::Conversion;
 pub use derived::{
     HEADER_BLOCK_HEADERS, SshBanner, header_block, join_cert_name, join_header_names,
     split_ssh_banner,
 };
+pub use et_open::{EtOpenError, convert_et_open, read_et_open_version};
 pub use event::{Event, FieldValue};
 pub use matcher::{MatchError, Matcher, RuleMatch};
 pub use normalize::{normalize_host, normalize_uri};
