@@ -95,6 +95,11 @@
 //! - One field condition expands into at most 1024 values (`windash`
 //!   before a Base64 encoding, `base64offset`); a rule past that is
 //!   rejected as malformed.
+//! - A detection nests `and`, `or` and `not` at most 32 deep, counting
+//!   those a search identifier's mappings and lists stand for, and a
+//!   `condition` nests `not` and parentheses at most 64 deep; a rule past
+//!   either is rejected as malformed. The first bound keeps every rule a
+//!   rule bundle stores readable from it.
 //!
 //! ## Case
 //!

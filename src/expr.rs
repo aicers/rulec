@@ -35,6 +35,18 @@ impl Expr {
         Expr::Or(items)
     }
 
+    /// Returns how many `And`, `Or` and `Not` nodes the deepest path from
+    /// the root to a leaf passes through.
+    pub(crate) fn depth(&self) -> usize {
+        match self {
+            Expr::And(items) | Expr::Or(items) => {
+                1 + items.iter().map(Expr::depth).max().unwrap_or_default()
+            }
+            Expr::Not(item) => 1 + item.depth(),
+            Expr::Leaf(_) => 0,
+        }
+    }
+
     /// Calls `f` on every leaf, in order.
     pub(crate) fn for_each_leaf<'a>(&'a self, f: &mut impl FnMut(&'a Leaf)) {
         match self {

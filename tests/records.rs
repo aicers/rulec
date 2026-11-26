@@ -81,6 +81,46 @@ fn bundle_round_trip() {
     );
 }
 
+/// Returns a rule whose condition nests `levels` alternating `and`s and
+/// `or`s, each over a search that is itself an AND of ORs, so its
+/// detection is `levels + 2` deep.
+fn nested_rule(levels: usize) -> Result<Rule, rulec::ReadError> {
+    let mut condition = "sel".to_string();
+    for level in 0..levels {
+        let op = if level % 2 == 0 { "and" } else { "or" };
+        condition = format!("sel {op} ({condition})");
+    }
+    Rule::from_yaml(&rule_text(
+        "deep",
+        &format!(
+            "    sel:\n        ua|windash|neq:\n            - '-a'\n            - '/b'\n        method:\n            - GET\n            - POST\n    condition: {condition}\n"
+        ),
+    ))
+}
+
+#[test]
+fn deepest_detection_round_trips() {
+    // 30 levels of condition over a search two deep: 32, the most a
+    // detection may nest.
+    let rule = nested_rule(30).unwrap();
+    let bundle = RuleBundle::new(Source::SigmaHq, vec![rule]).unwrap();
+    let read = RuleBundle::from_bytes(&bundle.to_bytes().unwrap()).unwrap();
+    assert_eq!(read, bundle);
+
+    assert!(matches!(nested_rule(31), Err(rulec::ReadError::Format(_))));
+    let nots = rule_text(
+        "nots",
+        &format!(
+            "    sel:\n        uri: '/a'\n    condition: {}sel\n",
+            "not ".repeat(130)
+        ),
+    );
+    assert!(matches!(
+        Rule::from_yaml(&nots),
+        Err(rulec::ReadError::Format(_))
+    ));
+}
+
 #[test]
 fn bundle_of_another_version_is_rejected() {
     let bytes = RuleBundle::new(Source::SigmaHq, sample_rules())

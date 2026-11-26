@@ -14,6 +14,14 @@ const HOME_NET: &str = "home_net";
 /// The most values one field condition may expand into, through
 /// `windash` before an encoding or through `base64offset`.
 const MAX_EXPANSION: usize = 1024;
+/// The most `and`, `or` and `not` nodes a rule's detection may nest.
+///
+/// A rule bundle stores the detection as JSON, and `serde_json` refuses
+/// to read JSON nested past 128 levels; an `and` or `or` takes two of
+/// them and a `not` one. Holding the detection to 32 keeps every rule a
+/// bundle writes readable, with room for the rule and field condition
+/// around it, and no Sigma rule comes near it.
+const MAX_DEPTH: usize = 32;
 /// The characters `windash` makes interchangeable.
 const WINDASH: [char; 5] = ['-', '/', '\u{2013}', '\u{2014}', '\u{2015}'];
 /// The Base64 alphabet.
@@ -66,7 +74,13 @@ pub(crate) fn parse(detection: &Node) -> Result<Expr, ReadError> {
         .into_iter()
         .map(|text| condition::parse(text, &searches))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Expr::or(exprs))
+    let expr = Expr::or(exprs);
+    if expr.depth() > MAX_DEPTH {
+        return Err(format_err(format!(
+            "the detection nests `and`, `or` and `not` more than {MAX_DEPTH} deep"
+        )));
+    }
+    Ok(expr)
 }
 
 /// Rejects a detection whose `expand` values name a placeholder other than

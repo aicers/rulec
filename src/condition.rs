@@ -6,6 +6,11 @@
 
 use crate::{expr::Expr, rule::ReadError};
 
+/// The most `not`s and parentheses that may enclose one another. This
+/// bounds the parser's recursion; the expression it yields is held to a
+/// tighter depth once the whole detection is read.
+const MAX_NESTING: usize = 64;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Token<'a> {
     Open,
@@ -52,6 +57,7 @@ pub(crate) fn parse(text: &str, searches: &[(&str, Expr)]) -> Result<Expr, ReadE
         text,
         tokens: &tokens,
         pos: 0,
+        nesting: 0,
         searches,
     };
     let expr = parser.or()?;
@@ -65,6 +71,7 @@ struct Parser<'t, 's> {
     text: &'t str,
     tokens: &'t [Token<'t>],
     pos: usize,
+    nesting: usize,
     searches: &'s [(&'s str, Expr)],
 }
 
@@ -75,6 +82,24 @@ impl Parser<'_, '_> {
 
     fn peek_word(&self, word: &str) -> bool {
         matches!(self.peek(), Some(Token::Word(w)) if *w == word)
+    }
+
+    /// Runs `parse` one level of nesting deeper, failing past
+    /// [`MAX_NESTING`].
+    fn nested(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<Expr, ReadError>,
+    ) -> Result<Expr, ReadError> {
+        if self.nesting >= MAX_NESTING {
+            return Err(error(
+                self.text,
+                &format!("`not` and parentheses nest more than {MAX_NESTING} deep"),
+            ));
+        }
+        self.nesting += 1;
+        let expr = parse(self);
+        self.nesting -= 1;
+        expr
     }
 
     fn or(&mut self) -> Result<Expr, ReadError> {
@@ -98,7 +123,7 @@ impl Parser<'_, '_> {
     fn not(&mut self) -> Result<Expr, ReadError> {
         if self.peek_word("not") {
             self.pos += 1;
-            return Ok(Expr::Not(Box::new(self.not()?)));
+            return Ok(Expr::Not(Box::new(self.nested(Self::not)?)));
         }
         self.primary()
     }
@@ -108,7 +133,7 @@ impl Parser<'_, '_> {
         match self.tokens.get(self.pos) {
             Some(Token::Open) => {
                 self.pos += 1;
-                let expr = self.or()?;
+                let expr = self.nested(Self::or)?;
                 if self.peek() != Some(&Token::Close) {
                     return Err(error(text, "a parenthesis is not closed"));
                 }
@@ -243,6 +268,18 @@ mod tests {
         for bad in ["a and", "(a", "a)", "x", "2 of them", "1 of z*", "a b", ""] {
             assert!(parse(bad, &searches).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn nesting_is_bounded() {
+        let searches = vec![("a", leaf("a"))];
+        let nots = |n: usize| format!("{}a", "not ".repeat(n));
+        let parens = |n: usize| format!("{}a{}", "(".repeat(n), ")".repeat(n));
+        assert!(parse(&nots(MAX_NESTING), &searches).is_ok());
+        assert!(parse(&parens(MAX_NESTING), &searches).is_ok());
+        assert!(parse(&nots(MAX_NESTING + 1), &searches).is_err());
+        assert!(parse(&parens(MAX_NESTING + 1), &searches).is_err());
+        assert!(parse(&parens(100_000), &searches).is_err());
     }
 
     #[test]
