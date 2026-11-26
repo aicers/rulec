@@ -61,23 +61,34 @@ const GZIP_FIXED_HEADER_LEN: usize = 10;
 /// The unpacked output is cut at [`MAX_DECODED_BODY_LEN`]: inflating stops
 /// when its output reaches that length (for raw deflate, such an output is
 /// used without reading the rest of the stream), and joined chunks that are
-/// not compressed are cut there. The joined chunks are inflated whole,
-/// however long, so the cap applies to what comes out of inflating rather
-/// than to the compressed data going in; they are never longer than the
-/// body.
+/// not compressed are cut there.
+///
+/// Chunks are joined only up to [`MAX_DECODED_BODY_LEN`] at first, so a
+/// chunked body that is not compressed costs no more to unpack than its
+/// first 1 MiB, however long it is. Compressed data has no cap of its own
+/// going in: if what inflating makes of the first
+/// [`MAX_DECODED_BODY_LEN`] bytes of the joined chunks could change with
+/// the bytes after them, the chunks are joined whole, however long, and
+/// the cap applies to what comes out of inflating. The joined chunks are
+/// never longer than the body.
 #[must_use]
 pub fn decode_body(body: &[u8]) -> Cow<'_, [u8]> {
-    let dechunked = dechunk(body);
-    let input = dechunked.as_deref().unwrap_or(body);
-    if let Some(inflated) = decompress(input) {
-        return Cow::Owned(inflated);
-    }
-    match dechunked {
-        Some(mut joined) => {
-            joined.truncate(MAX_DECODED_BODY_LEN);
-            Cow::Owned(joined)
-        }
-        None => Cow::Borrowed(body),
+    let Some(chunks) = Chunks::new(body) else {
+        return match decompress(body, false) {
+            Decompressed::Inflated(out) => Cow::Owned(out),
+            Decompressed::NotCompressed | Decompressed::NeedsMore => Cow::Borrowed(body),
+        };
+    };
+    let head = join(chunks.clone(), MAX_DECODED_BODY_LEN);
+    match decompress(&head.data, head.cut) {
+        Decompressed::Inflated(out) => Cow::Owned(out),
+        Decompressed::NotCompressed => Cow::Owned(head.data),
+        Decompressed::NeedsMore => match decompress(&join(chunks, usize::MAX).data, false) {
+            Decompressed::Inflated(out) => Cow::Owned(out),
+            // Not compressed after all: the whole joined chunks cut at the
+            // cap, which is what `head` holds.
+            Decompressed::NotCompressed | Decompressed::NeedsMore => Cow::Owned(head.data),
+        },
     }
 }
 
@@ -112,46 +123,87 @@ fn line_end(input: &[u8]) -> Option<&[u8]> {
         .or_else(|| input.strip_prefix(b"\n"))
 }
 
-/// Joins the chunks of a chunked body, or returns `None` if the body is
-/// not chunked.
-///
-/// The chunks are joined whole: the output is never longer than `body`,
-/// and [`decode_body`] caps what it makes of them.
-fn dechunk(body: &[u8]) -> Option<Vec<u8>> {
-    let (mut size, mut rest) = size_line(body)?;
-    let mut out = Vec::new();
-    let mut first = true;
-    while size > 0 {
-        let Some(data) = rest.get(..size) else {
+/// The data of the chunks of a chunked body, one chunk at a time, up to
+/// the last chunk (size `0`) or to where the input or the framing breaks
+/// off. Nothing is copied.
+#[derive(Clone, Debug)]
+struct Chunks<'a> {
+    /// The size of the chunk `rest` starts with; `0` once there is none.
+    size: usize,
+    /// The input after the chunk-size line of the current chunk.
+    rest: &'a [u8],
+}
+
+impl<'a> Chunks<'a> {
+    /// Reads the first chunk of `body`, or returns `None` if the body is
+    /// not chunked.
+    fn new(body: &'a [u8]) -> Option<Self> {
+        let (size, rest) = size_line(body)?;
+        // The first chunk's data, or the last chunk's size line if the
+        // first chunk is the last, is followed by a line end, or the input
+        // ends before one (or inside it, after a CR). Anything else breaks
+        // the framing, and the first chunk must not be broken. Input
+        // ending inside the first chunk's data is still inside the chunk.
+        let after = if size == 0 {
+            Some(rest)
+        } else {
+            rest.get(size..)
+        };
+        let framed = after
+            .is_none_or(|after| after.is_empty() || after == b"\r" || line_end(after).is_some());
+        framed.then_some(Self { size, rest })
+    }
+}
+
+impl<'a> Iterator for Chunks<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        if self.size == 0 {
+            return None;
+        }
+        let Some(data) = self.rest.get(..self.size) else {
             // The input ends inside the chunk.
-            out.extend_from_slice(rest);
-            break;
+            self.size = 0;
+            return Some(self.rest);
         };
-        let after = rest.get(size..).unwrap_or_default();
-        let Some(next) = line_end(after) else {
-            // The input ends before the line end (or inside it, after a
-            // CR), which is still inside the chunk; anything else breaks
-            // the framing, and the first chunk must not be broken.
-            if first && !(after.is_empty() || after == b"\r") {
-                return None;
+        let after = self.rest.get(self.size..).unwrap_or_default();
+        // Without a line end and a chunk-size line after the data, the
+        // input or the framing breaks off after this chunk.
+        match line_end(after).and_then(size_line) {
+            Some((size, rest)) => {
+                self.size = size;
+                self.rest = rest;
             }
-            out.extend_from_slice(data);
-            break;
-        };
-        out.extend_from_slice(data);
-        first = false;
-        let Some((next_size, after_line)) = size_line(next) else {
-            break;
-        };
-        size = next_size;
-        rest = after_line;
+            None => self.size = 0,
+        }
+        Some(data)
     }
-    // The last chunk can be the first: then the body is chunked if its
-    // size line is followed by a line end, or nothing.
-    if first && size == 0 && !(rest.is_empty() || rest == b"\r" || line_end(rest).is_some()) {
-        return None;
+}
+
+/// Chunk data joined up to a limit.
+#[derive(Debug)]
+struct Joined {
+    /// The joined data, no longer than the limit.
+    data: Vec<u8>,
+    /// Whether chunk data past the limit was left out.
+    cut: bool,
+}
+
+/// Joins chunk data, copying at most `limit` bytes and reading no chunk
+/// after the one that reaches it.
+fn join(chunks: Chunks<'_>, limit: usize) -> Joined {
+    // The chunks' data all lies in `rest`, so it never needs more room.
+    let mut data = Vec::with_capacity(chunks.rest.len().min(limit));
+    for piece in chunks {
+        let room = limit.saturating_sub(data.len());
+        if piece.len() > room {
+            data.extend_from_slice(piece.get(..room).unwrap_or_default());
+            return Joined { data, cut: true };
+        }
+        data.extend_from_slice(piece);
     }
-    Some(out)
+    Joined { data, cut: false }
 }
 
 /// How inflating ended.
@@ -161,8 +213,10 @@ enum Ended {
     StreamEnd(u64),
     /// The output reached [`MAX_DECODED_BODY_LEN`].
     Capped,
-    /// The input ran out or was not valid.
-    Stopped,
+    /// Inflating made no progress without an error: the input ran out.
+    Starved,
+    /// The input was not valid.
+    Invalid,
 }
 
 /// Inflates `input`, a zlib stream if `zlib` is set and raw deflate
@@ -192,10 +246,10 @@ fn inflate(input: &[u8], zlib: bool) -> (Vec<u8>, Ended) {
         match result {
             Ok(Status::StreamEnd) => return (out, Ended::StreamEnd(inflater.total_in())),
             Ok(_) if produced == 0 && inflater.total_in() == before_in => {
-                return (out, Ended::Stopped);
+                return (out, Ended::Starved);
             }
             Ok(_) => {}
-            Err(_) => return (out, Ended::Stopped),
+            Err(_) => return (out, Ended::Invalid),
         }
     }
 }
@@ -236,24 +290,60 @@ fn is_zlib_header(input: &[u8]) -> bool {
     }
 }
 
-/// Inflates one layer of gzip, zlib or raw deflate, or returns `None` if
-/// the input is none of them by the rules of [`decode_body`].
-fn decompress(input: &[u8]) -> Option<Vec<u8>> {
-    if input.starts_with(&GZIP_MAGIC) {
-        let (out, _) = inflate(gzip_deflate_data(input)?, false);
-        return (!out.is_empty()).then_some(out);
-    }
-    if is_zlib_header(input) {
-        let (out, _) = inflate(input, true);
-        return (!out.is_empty()).then_some(out);
-    }
-    let (out, ended) = inflate(input, false);
-    let whole = match ended {
-        Ended::StreamEnd(taken) => usize::try_from(taken).is_ok_and(|t| t == input.len()),
-        Ended::Capped => true,
-        Ended::Stopped => false,
+/// What [`decompress`] made of its input.
+#[derive(Debug)]
+enum Decompressed {
+    /// The input is compressed, and inflated to this.
+    Inflated(Vec<u8>),
+    /// The input is none of gzip, zlib or raw deflate by the rules of
+    /// [`decode_body`].
+    NotCompressed,
+    /// The input is followed by more data, and what inflating makes of the
+    /// input alone could change with that data.
+    NeedsMore,
+}
+
+/// Inflates one layer of gzip, zlib or raw deflate by the rules of
+/// [`decode_body`]. `more` says whether more data follows `input`, which
+/// is then only its start.
+fn decompress(input: &[u8], more: bool) -> Decompressed {
+    let (out, ended) = if input.starts_with(&GZIP_MAGIC) {
+        let Some(data) = gzip_deflate_data(input) else {
+            return if more {
+                Decompressed::NeedsMore
+            } else {
+                Decompressed::NotCompressed
+            };
+        };
+        inflate(data, false)
+    } else if is_zlib_header(input) {
+        inflate(input, true)
+    } else {
+        let (out, ended) = inflate(input, false);
+        let whole = match ended {
+            // Whether bytes follow the stream, or the stream would have
+            // ended exactly at the cap with bytes after it, only the data
+            // after `input` tells.
+            Ended::Starved | Ended::Capped if more => return Decompressed::NeedsMore,
+            Ended::StreamEnd(taken) => {
+                !more && usize::try_from(taken).is_ok_and(|t| t == input.len())
+            }
+            Ended::Capped => true,
+            Ended::Starved | Ended::Invalid => false,
+        };
+        return if whole {
+            Decompressed::Inflated(out)
+        } else {
+            Decompressed::NotCompressed
+        };
     };
-    whole.then_some(out)
+    if more && ended == Ended::Starved {
+        Decompressed::NeedsMore
+    } else if out.is_empty() {
+        Decompressed::NotCompressed
+    } else {
+        Decompressed::Inflated(out)
+    }
 }
 
 #[cfg(test)]
@@ -449,6 +539,117 @@ mod tests {
         e.write_all(&data).unwrap();
         let raw = e.finish().unwrap();
         assert_eq!(&*decode_body(&chunk(&[&raw])), &data[..]);
+    }
+
+    /// Plain text that is no compressed stream, `len` bytes of it.
+    fn lines(len: usize) -> Vec<u8> {
+        (0_u32..)
+            .flat_map(|i| format!("line {i}\n").into_bytes())
+            .take(len)
+            .collect()
+    }
+
+    /// Bytes that do not compress, `len` of them.
+    fn noise(len: usize) -> Vec<u8> {
+        let mut state = 0x2545_f491_u32;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_le_bytes()[0]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dechunking_stops_at_the_cap() {
+        let data = lines(2 * MAX_DECODED_BODY_LEN + 12_345);
+        let pieces: Vec<&[u8]> = data.chunks(100_000).collect();
+        let body = chunk(&pieces);
+        let chunks = Chunks::new(&body).unwrap();
+        let head = join(chunks.clone(), MAX_DECODED_BODY_LEN);
+        // No byte past the cap is copied, and no room is made for one.
+        assert!(head.cut);
+        assert_eq!(head.data.len(), MAX_DECODED_BODY_LEN);
+        assert!(head.data.capacity() <= MAX_DECODED_BODY_LEN);
+        assert_eq!(head.data, data[..MAX_DECODED_BODY_LEN]);
+        // Not compressed, so `decode_body` joins no more than that.
+        assert!(matches!(
+            decompress(&head.data, head.cut),
+            Decompressed::NotCompressed
+        ));
+        assert_eq!(&*decode_body(&body), &data[..MAX_DECODED_BODY_LEN]);
+        // Joined without a limit, the chunks give all the data.
+        let whole = join(chunks, usize::MAX);
+        assert!(!whole.cut);
+        assert_eq!(whole.data, data);
+    }
+
+    #[test]
+    fn chunks_ending_around_the_cap() {
+        const CAP: usize = MAX_DECODED_BODY_LEN;
+        // The trailer `chunk` ends with, after the last chunk's data.
+        const AFTER_DATA: usize = b"\r\n0\r\nX-Trailer: t\r\n\r\n".len();
+        let data = lines(CAP + 3);
+        for sizes in [
+            &[CAP - 1][..],
+            &[CAP],
+            &[CAP + 1],
+            &[CAP - 1, 1],
+            &[CAP - 1, 2],
+            &[CAP, 1],
+            &[CAP + 1, 1],
+            &[1, CAP - 2, 1],
+            &[1, CAP - 1, 1],
+            &[1, CAP, 1],
+        ] {
+            let mut pieces = Vec::new();
+            let mut len = 0;
+            for &size in sizes {
+                pieces.push(&data[len..len + size]);
+                len += size;
+            }
+            let body = chunk(&pieces);
+            // Whole, and cut short inside the last chunk's data.
+            for (body, len) in [
+                (&body[..], len),
+                (&body[..body.len() - AFTER_DATA - 1], len - 1),
+            ] {
+                let expected = &data[..len.min(CAP)];
+                assert_eq!(&*decode_body(body), expected, "{sizes:?}, {len}");
+                let head = join(Chunks::new(body).unwrap(), CAP);
+                assert_eq!(head.data, expected, "{sizes:?}, {len}");
+                assert_eq!(head.cut, len > CAP, "{sizes:?}, {len}");
+            }
+        }
+        // The framing of a first chunk longer than the cap is still read:
+        // broken, the body is not chunked.
+        let mut broken = format!("{:x}\r\n", CAP + 1).into_bytes();
+        broken.extend_from_slice(&data[..CAP + 1]);
+        broken.push(b'X');
+        assert!(Chunks::new(&broken).is_none());
+        assert!(matches!(decode_body(&broken), Cow::Borrowed(b) if b == &broken[..]));
+    }
+
+    #[test]
+    fn chunked_compressed_bodies_past_the_cap() {
+        // The first 1 MiB of the stream inflates past the cap.
+        let mut data = vec![b'a'; 2 * MAX_DECODED_BODY_LEN];
+        data.extend_from_slice(&noise(2 * MAX_DECODED_BODY_LEN));
+        // The first 1 MiB of the stream does not reach the cap.
+        let dense = noise(3 * MAX_DECODED_BODY_LEN);
+        for data in [&data, &dense] {
+            for packed in [gzip(data), zlib(data), deflate(data)] {
+                assert!(packed.len() > MAX_DECODED_BODY_LEN);
+                let pieces: Vec<&[u8]> = packed.chunks(100_000).collect();
+                let body = chunk(&pieces);
+                assert_eq!(&*decode_body(&body), &data[..MAX_DECODED_BODY_LEN]);
+                // Cut short, the same.
+                let cut = &body[..body.len() / 2];
+                assert_eq!(&*decode_body(cut), &data[..MAX_DECODED_BODY_LEN]);
+            }
+        }
     }
 
     #[test]

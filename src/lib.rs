@@ -287,8 +287,9 @@
 //! record holds no response headers and may hold only the start of a
 //! body. A body cut short gives what it unpacks to up to the cut; a body
 //! it cannot unpack is returned as it is. Raw deflate is used only when
-//! the whole body is one complete stream, so a plain body is never
-//! misread as one. Unpacked output is cut at [`MAX_DECODED_BODY_LEN`]
+//! the whole body is one complete stream, or when inflating it reaches
+//! [`MAX_DECODED_BODY_LEN`] before the stream ends, so a plain body is
+//! not misread as one. Unpacked output is cut at [`MAX_DECODED_BODY_LEN`]
 //! (1 MiB), and unpacking stops there. Its documentation has the rules in
 //! full.
 //!
