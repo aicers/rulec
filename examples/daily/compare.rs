@@ -111,11 +111,23 @@ fn source_scopes(line: &[u8]) -> BTreeSet<String> {
                 if flags.contains(['Q', 'S', 'Y']) {
                     scopes.insert("http_response".into());
                 }
-                if flags.contains(['U', 'I', 'H', 'D', 'C', 'M', 'P', 'V', 'W', 'Z']) {
+                if flags.contains(['U', 'I', 'D', 'C', 'M', 'P', 'V', 'W', 'Z']) {
                     scopes.insert("http_request".into());
+                }
+                // Header buffers exist on both sides; the flow picks one.
+                if flags.contains('H') {
+                    scopes.insert(
+                        if response_only {
+                            "http_response"
+                        } else {
+                            "http_request"
+                        }
+                        .into(),
+                    );
                 }
                 None
             }
+            "urilen" => Some("http_request"),
             name if name.starts_with("http.") || name.starts_with("http_") => {
                 Some(if response_only {
                     "http_response"
@@ -287,7 +299,9 @@ pub(super) struct RuleResult {
     pub sid: String,
     pub rev: Option<u64>,
     pub msg: String,
-    pub classification: String,
+    /// Every class the rule belongs to: `equal` alone, or `suricata_only`
+    /// and/or `rulec_only`.
+    pub classification: Vec<String>,
     pub input_limit: bool,
     pub threshold: bool,
     pub pairs: Vec<Pair>,
@@ -333,7 +347,6 @@ pub(super) fn classify(
             ("equal".into(), 0),
             ("suricata_only".into(), 0),
             ("rulec_only".into(), 0),
-            ("both".into(), 0),
         ]),
         coverage: SCOPES.map(|s| (s.to_string(), Vec::new())).into(),
         missing_scopes: Vec::new(),
@@ -345,7 +358,8 @@ pub(super) fn classify(
     let all_keys: BTreeSet<_> = suricata.keys().chain(matched.keys()).collect();
     for rule in infos {
         let mut pairs = Vec::new();
-        let mut sides = BTreeSet::new();
+        let mut suricata_only = false;
+        let mut rulec_only = false;
         for key in all_keys.iter().copied().filter(|key| key.sid == rule.sid) {
             let s = suricata.contains_key(key);
             let r = matched.contains_key(key);
@@ -385,7 +399,11 @@ pub(super) fn classify(
             if classification == "equal" {
                 continue;
             }
-            sides.insert(classification);
+            if s {
+                suricata_only = true;
+            } else {
+                rulec_only = true;
+            }
             let evidence = if r {
                 matched.get(key).cloned().unwrap_or_default()
             } else {
@@ -415,15 +433,24 @@ pub(super) fn classify(
                 evidence,
             });
         }
-        let classification = if sides.len() > 1 {
-            "both"
-        } else {
-            sides.first().copied().unwrap_or("equal")
-        };
+        // A rule that disagrees both ways belongs to, and is counted in, both
+        // mismatch classes.
+        let mut classification = Vec::new();
+        if suricata_only {
+            classification.push("suricata_only".to_owned());
+        }
+        if rulec_only {
+            classification.push("rulec_only".to_owned());
+        }
+        if classification.is_empty() {
+            classification.push("equal".to_owned());
+        }
         // A rule is suppressed if any mismatch carries a mark, as specified.
         let input_limit = pairs.iter().any(|p| p.input_limit);
         let threshold = pairs.iter().any(|p| p.threshold);
-        *result.counts.entry(classification.into()).or_default() += 1;
+        for class in &classification {
+            *result.counts.entry(class.clone()).or_default() += 1;
+        }
         for list in result.coverage.values_mut() {
             for entry in list.iter_mut().filter(|entry| entry["sid"] == rule.sid) {
                 entry["classification"] = json!(classification);
@@ -433,7 +460,7 @@ pub(super) fn classify(
             sid: rule.sid.clone(),
             rev: rule.rev,
             msg: rule.msg.clone(),
-            classification: classification.into(),
+            classification,
             input_limit,
             threshold,
             pairs,
@@ -699,7 +726,7 @@ mod tests {
             &BTreeMap::new(),
         );
         let mismatch = result.rules.first().unwrap();
-        assert_eq!(mismatch.classification, "suricata_only");
+        assert_eq!(mismatch.classification, ["suricata_only"]);
         assert!(!mismatch.input_limit);
     }
 
@@ -739,10 +766,13 @@ mod tests {
             result.counts,
             BTreeMap::from([
                 ("equal".into(), 1),
-                ("suricata_only".into(), 2),
-                ("rulec_only".into(), 1),
-                ("both".into(), 1)
+                ("suricata_only".into(), 3),
+                ("rulec_only".into(), 2),
             ])
+        );
+        assert_eq!(
+            result.rules.get(3).unwrap().classification,
+            ["suricata_only", "rulec_only"]
         );
         assert!(result.rules.get(1).unwrap().input_limit);
         assert!(result.rules.get(2).unwrap().threshold);
@@ -1030,7 +1060,7 @@ mod tests {
             &BTreeMap::new(),
         );
         let rule = result.rules.first().unwrap();
-        assert_eq!(rule.classification, "suricata_only");
+        assert_eq!(rule.classification, ["suricata_only"]);
         assert!(rule.input_limit);
         assert!(rule.pairs.first().unwrap().input_limit);
     }
@@ -1079,9 +1109,149 @@ mod tests {
                 &BTreeMap::new(),
             );
             let rule = result.rules.first().unwrap();
-            assert_eq!(rule.classification, "suricata_only");
+            assert_eq!(rule.classification, ["suricata_only"]);
             assert_eq!(rule.input_limit, incomplete, "{field}: {answers}");
             assert_eq!(rule.pairs.first().unwrap().input_limit, incomplete);
+        }
+    }
+
+    #[test]
+    fn rule_disagreeing_in_both_directions_belongs_to_both_classes() {
+        let mut infos: Vec<_> = ["1", "2", "3", "4", "5"].map(info).into();
+        let both = infos.first_mut().unwrap();
+        both.partial_header = true;
+        both.threshold = true;
+        // Rule 1 disagrees both ways, 2 only Suricata-side, 3 only rulec-side,
+        // 4 agrees on every pair and 5 never fires.
+        let s = BTreeMap::from([
+            (key("1", 1), evidence()),
+            (key("2", 1), evidence()),
+            (key("4", 1), evidence()),
+        ]);
+        let r = BTreeMap::from([
+            (key("1", 2), evidence()),
+            (key("3", 1), evidence()),
+            (key("4", 1), evidence()),
+        ]);
+        let result = classify(
+            &infos,
+            &s,
+            &r,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let classes: Vec<_> = result
+            .rules
+            .iter()
+            .map(|rule| serde_json::to_value(rule).unwrap()["classification"].clone())
+            .collect();
+        assert_eq!(
+            classes,
+            [
+                json!(["suricata_only", "rulec_only"]),
+                json!(["suricata_only"]),
+                json!(["rulec_only"]),
+                json!(["equal"]),
+                json!(["equal"]),
+            ]
+        );
+        assert_eq!(
+            result.counts,
+            BTreeMap::from([
+                ("equal".into(), 2),
+                ("suricata_only".into(), 2),
+                ("rulec_only".into(), 2),
+            ])
+        );
+        let coverage = result.coverage.get("http_response").unwrap();
+        let entry = coverage.iter().find(|entry| entry["sid"] == "1").unwrap();
+        assert_eq!(
+            entry["classification"],
+            json!(["suricata_only", "rulec_only"])
+        );
+        assert!(!serde_json::to_string(&result).unwrap().contains("both"));
+        // Pair classification and the marks are unchanged by the rule's classes.
+        let rule = result.rules.first().unwrap();
+        let pairs: Vec<_> = rule
+            .pairs
+            .iter()
+            .map(|pair| {
+                (
+                    pair.classification.as_str(),
+                    pair.input_limit,
+                    pair.threshold,
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            [("suricata_only", true, false), ("rulec_only", false, true)]
+        );
+        assert!(rule.input_limit && rule.threshold);
+    }
+
+    #[test]
+    fn pcre_header_flag_follows_flow_and_urilen_is_request() {
+        for (options, expected) in [
+            (
+                r#"flow:established,to_client; pcre:"/probe/H";"#,
+                "http_response",
+            ),
+            (r#"flow:from_server; pcre:"/probe/Hi";"#, "http_response"),
+            (r#"pcre:"/probe/H";"#, "http_request"),
+            (r#"flow:to_server; pcre:"/probe/H";"#, "http_request"),
+            (r"urilen:>100;", "http_request"),
+            (r"flow:to_client; urilen:5<>10;", "http_request"),
+        ] {
+            let line =
+                format!("alert http any any -> any any (msg:\"synthetic\"; {options} sid:1;)");
+            assert_eq!(
+                source_scopes(line.as_bytes()),
+                BTreeSet::from([expected.to_owned()]),
+                "{options}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_rejected_http_scopes_from_header_pcre_and_urilen_do_not_fail() {
+        let lines = vec![
+            br#"alert http any any -> any any (msg:"synthetic"; flow:to_client; pcre:"/probe/H"; sid:81;)"#.to_vec(),
+            br#"alert http any any -> any any (msg:"synthetic"; pcre:"/probe/H"; sid:82;)"#.to_vec(),
+            br#"alert http any any -> any any (msg:"synthetic"; urilen:>100; sid:83;)"#.to_vec(),
+        ];
+        let dropped = BTreeMap::from([
+            ("unsupported_regex".into(), vec!["81".into(), "82".into()]),
+            ("needs_state".into(), vec!["83".into()]),
+        ]);
+        let rejected = rejected_scopes(&lines, &dropped);
+        let reject = |sid: &str, reason: &str| RejectedRule {
+            sid: sid.into(),
+            reason: reason.into(),
+        };
+        for (scope, expected) in [
+            ("http_response", vec![reject("81", "unsupported_regex")]),
+            (
+                "http_request",
+                vec![
+                    reject("82", "unsupported_regex"),
+                    reject("83", "needs_state"),
+                ],
+            ),
+        ] {
+            assert_eq!(rejected.get(scope), Some(&expected), "{scope}");
+            let mut covered = info("1");
+            covered.scopes = SCOPES
+                .iter()
+                .filter(|s| **s != scope)
+                .map(|s| (*s).into())
+                .collect();
+            let s = BTreeMap::from([(key("1", 1), evidence())]);
+            let result = classify(&[covered], &s, &s, &BTreeMap::new(), &dropped, &rejected);
+            assert!(result.errors.is_empty(), "{scope}: {:?}", result.errors);
+            assert!(result.missing_scopes.is_empty(), "{scope}");
+            assert_eq!(result.no_comparable_rules.get(scope), Some(&expected));
         }
     }
 

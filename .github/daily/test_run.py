@@ -30,8 +30,9 @@ class FakeGithub:
         return "https://github.com/example/test/issues/123"
 
 
-def rule(sid, rev=1, mark=None):
-    return {"sid": str(sid), "rev": rev, "msg": "test message", "classification": "suricata_only", "input_limit": mark == "input", "threshold": mark == "threshold", "pairs": [{"key": {"pcap": "public", "flow": 42}, "classification": "suricata_only", "evidence": [{"tuple": ["10.0.0.1", 1234, "1.2.3.4", 80, 6], "kind": "Http", "fields": ["uri"]}]}]}
+def rule(sid, rev=1, mark=None, classes=("suricata_only",)):
+    pairs = [{"key": {"pcap": "public", "flow": 42 + n}, "classification": c, "evidence": [{"tuple": ["10.0.0.1", 1234, "1.2.3.4", 80, 6], "kind": "Http", "fields": ["uri"]}]} for n, c in enumerate(c for c in classes if c != "equal")]
+    return {"sid": str(sid), "rev": rev, "msg": "test message", "classification": list(classes), "input_limit": mark == "input", "threshold": mark == "threshold", "pairs": pairs}
 
 
 def report(source, error=None):
@@ -248,6 +249,43 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(len(deferred), 6)
         self.assertEqual((planned[0]["sid"], planned[0]["rev"]), ("1", 2))
         self.assertNotIn("3", [r["sid"] for r in planned])
+
+    def test_issue_plan_treats_rules_in_both_classes_as_before(self):
+        both = ("suricata_only", "rulec_only")
+        existing = [{"body": run.marker(rule(5, classes=both)), "state": "closed"}]
+        rules = [
+            rule(1, classes=both), rule(1, classes=both), rule(1, 2, classes=both),
+            rule(2, classes=both, mark="input"), rule(3, classes=both, mark="threshold"),
+            rule(4, classes=("equal",)), rule(5, classes=both),
+            rule(6), rule(7, classes=("rulec_only",)), rule(8, classes=("rulec_only",), mark="threshold"),
+        ]
+        planned, deferred = run.issue_plan(rules, existing)
+        self.assertEqual([(r["sid"], r["rev"]) for r in planned], [("1", 1), ("1", 2), ("6", 1), ("7", 1)])
+        self.assertEqual(deferred, [])
+
+    def test_issue_body_names_every_class_of_the_rule(self):
+        context = {"run_url": "https://example.test/run", "source_version": "v1", "rulec_version": "0.1.0"}
+        body = run.issue_body(rule(1, classes=("suricata_only", "rulec_only")), context)
+        details = json.loads(body.split("```json\n", 1)[1].split("\n```", 1)[0])
+        self.assertEqual(details["분류"], ["suricata_only", "rulec_only"])
+        self.assertEqual([p["classification"] for p in details["어긋난 쌍"]], ["suricata_only", "rulec_only"])
+
+    def test_summary_lists_every_class_of_compared_rules(self):
+        with tempfile.TemporaryDirectory() as name:
+            output = Path(name)
+            run.save(output / "conversion.json", [report("et_open")])
+            run.save(output / "differential.json", {
+                "status": "completed", "errors": [],
+                "counts": {"equal": 1, "suricata_only": 1, "rulec_only": 1},
+                "coverage": {"http_response": [
+                    {"sid": "1", "classification": ["suricata_only", "rulec_only"]},
+                    {"sid": "2", "classification": ["equal"]},
+                ]},
+            })
+            self.assertFalse(run.finish(output))
+            summary = (output / "summary.md").read_text()
+            self.assertIn("- http_response: 1 (suricata_only, rulec_only), 2 (equal)", summary)
+            self.assertNotIn("both", summary)
 
     def test_only_default_branch_schedule_publishes_with_fake_api(self):
         context = {"run_url": "https://example.test/run", "source_version": "v1", "rulec_version": "0.1.0"}

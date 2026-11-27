@@ -120,10 +120,13 @@ for a scope were rejected, the result's `no_comparable_rules` and run
 summary instead report **견줄 규칙 없음** (no comparable rule) with every
 rejected SID and its actual conversion reason, without adding a missing scope or
 failing the run. Source option names (including legacy
-buffer names and HTTP PCRE buffer flags), flow direction, accepted fields,
-and rejection IDs from
+buffer names, HTTP PCRE buffer flags and `urilen`), flow direction,
+accepted fields, and rejection IDs from
 the same archive determine this distinction anew, without special cases
-for a scope or source version. Quoted messages and content are not syntax.
+for a scope or source version. A PCRE `H` (header) flag counts toward
+HTTP response under `flow` `to_client` or `from_server` and toward HTTP
+request otherwise; `urilen` counts toward HTTP request. Quoted messages
+and content are not syntax.
 An absent or unrecognized scope without rejected candidates still fails.
 Adding pcaps cannot fill a scope whose source rules are all rejected;
 converter support must first be addressed in a separate reviewed change.
@@ -275,8 +278,14 @@ guessed certificate identities.
 
 Each observed `(pcap, flow, sid)` is `equal`, `suricata_only`, or
 `rulec_only`. A rule is `equal` when no pair differs, including a rule
-that never fires. Otherwise it is `suricata_only`, `rulec_only`, or `both`
-when different pairs disagree in both directions. Only mismatched pairs
+that never fires. Otherwise it belongs to `suricata_only` if any pair is
+Suricata-only and to `rulec_only` if any pair is rulec-only, so a rule
+whose pairs disagree in both directions belongs to both classes. A rule's
+`classification` in the result lists every class it belongs to, as do its
+coverage entries, the run summary's per-scope listing and a filed issue's
+classification field. The per-class rule counts count such a rule in each
+of its classes, so they may add up to more than the number of compared
+rules. Only mismatched pairs
 need evidence in the result; they include pcap, flow ID, five-tuple, record
 kind and, for rulec hits, the fields whose conditions were true.
 

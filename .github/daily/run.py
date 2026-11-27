@@ -229,7 +229,7 @@ def issue_plan(rules, existing, limit=20):
     planned, deferred = [], []
     for rule in rules:
         key = marker(rule)
-        if rule["classification"] == "equal" or rule["input_limit"] or rule["threshold"] or key in seen:
+        if rule["classification"] == ["equal"] or rule["input_limit"] or rule["threshold"] or key in seen:
             continue
         seen.add(key)
         (planned if len(planned) < limit else deferred).append(rule)
@@ -312,7 +312,7 @@ def finish(output, previous=None, baseline_error=None):
         if rejected:
             lines.append(f'- {scope}: 견줄 규칙 없음; ' + ", ".join(f'{r["sid"]} ({r["reason"]})' for r in rejected))
         else:
-            lines.append(f'- {scope}: ' + (", ".join(f'{r["sid"]} ({r["classification"]})' for r in rules) or "견준 규칙 없음"))
+            lines.append(f'- {scope}: ' + (", ".join(f'{r["sid"]} ({", ".join(r["classification"])})' for r in rules) or "견준 규칙 없음"))
     for excluded in differential.get("excluded_pcaps", []):
         lines.append(f'- 제외한 pcap {excluded["pcap"]}: {excluded["reason"]}')
     for error in differential.get("errors", []):
