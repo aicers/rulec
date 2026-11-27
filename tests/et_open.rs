@@ -435,6 +435,112 @@ fn literals_normalization_case_bytes_and_prefilter() {
 }
 
 #[test]
+fn continuations_preserve_literal_bytes_and_keyword_spelling() {
+    for (source, expected) in [
+        ("ab\\\ncd", b"abcd".as_slice()),
+        ("ab\\\n  cd", b"ab  cd"),
+        ("ab\\\n#cd", b"ab#cd"),
+        ("ab\\ \t\r\ncd", b"abcd"),
+    ] {
+        let converted = accepted(&format!("http.uri.raw; content:\"{source}\";"));
+        assert_eq!(converted.rules[0].prefilter(), Some(expected));
+        let compiled = compile(converted.rules).unwrap();
+        assert_eq!(
+            matched_ids(&compiled, &TestEvent::http().bytes("uri", expected), &[]),
+            ["90001"]
+        );
+    }
+    let converted = accepted("http.uri.raw; con\\\ntent:\"abcd\";");
+    assert_eq!(converted.rules[0].prefilter(), Some(b"abcd".as_slice()));
+
+    let first = rule(
+        90001,
+        "http any any -> any any",
+        "http.uri.raw; content:\"ab\\\n\n",
+    );
+    let second = "alert http any any -> any any (msg:\"missing sid\"; http.uri.raw; content:\"x\"; metadata:updated_at 2026_11_25;)\n";
+    let converted = convert(&format!("# ignored\n{first}{second}"));
+    assert_eq!(
+        converted
+            .summary
+            .dropped
+            .get(reason::MISSING_ATTRIBUTE)
+            .unwrap(),
+        &["emerging-malware.rules:5"]
+    );
+    assert_eq!(
+        converted.summary.dropped.get(reason::FORMAT_ERROR).unwrap(),
+        &["emerging-malware.rules:2", "emerging-malware.rules:4"]
+    );
+}
+
+#[test]
+fn negated_patterns_require_a_present_buffer() {
+    for (header, buffer, field) in [
+        ("http", "flow:to_server; file.data", "body.request"),
+        ("http", "http.uri", "uri.normalized"),
+        ("http", "http.host", "host.normalized"),
+        ("http", "http.header_names", "header_names.joined"),
+        ("tls", "tls.cert_subject", "subject.joined"),
+        ("ssh", "flow:to_server; ssh.software", "client.software"),
+        ("ssh", "flow:to_client; ssh.software", "server.software"),
+    ] {
+        for pattern in [
+            r#"content:!"x";"#,
+            r#"content:!"x"; startswith;"#,
+            r#"content:!"x"; endswith;"#,
+            r#"pcre:!"/x/";"#,
+            r#"pcre:!"/x/i";"#,
+        ] {
+            let converted = convert(&rule(
+                90001,
+                &format!("{header} any any -> any any"),
+                &format!("{buffer}; {pattern}"),
+            ));
+            assert_eq!(converted.rules.len(), 1, "{:?}", converted.summary);
+            let kind = converted.rules[0].kind();
+            let compiled = compile(converted.rules).unwrap();
+            assert!(matched_ids(&compiled, &TestEvent::new(kind), &[]).is_empty());
+            for (value, matches) in [(b"".as_slice(), true), (b"good", true), (b"x", false)] {
+                assert_eq!(
+                    !matched_ids(&compiled, &TestEvent::new(kind).bytes(field, value), &[])
+                        .is_empty(),
+                    matches,
+                    "{buffer}; {pattern}, {value:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn negated_neutral_buffers_keep_presence_with_direction_and_endpoints() {
+    for pattern in [r#"content:!"x";"#, r#"pcre:!"/x/";"#] {
+        let converted = convert(&rule(
+            90001,
+            "ssh 10.0.0.0/8 50000 -> 198.51.100.0/24 80",
+            &format!("ssh.software; {pattern}"),
+        ));
+        let compiled = compile(converted.rules).unwrap();
+        for reverse in [false, true] {
+            let event = network_event(RawEventKind::Ssh, reverse);
+            assert!(matched_ids(&compiled, &event, &[]).is_empty());
+            let (field, other) = if reverse {
+                ("server.software", "client.software")
+            } else {
+                ("client.software", "server.software")
+            };
+            assert_eq!(
+                matched_ids(&compiled, &event.clone().bytes(field, b"good"), &[]),
+                ["90001"]
+            );
+            assert!(matched_ids(&compiled, &event.clone().bytes(other, b"good"), &[]).is_empty());
+            assert!(matched_ids(&compiled, &event.bytes(field, b"x"), &[]).is_empty());
+        }
+    }
+}
+
+#[test]
 fn anchors_lengths_and_regex_chains() {
     for option in ["startswith;", "offset:0; depth:3;"] {
         let options = format!("http.uri.raw; content:\"abc\"; {option}");
@@ -1212,6 +1318,37 @@ fn record<T: serde::de::DeserializeOwned>(extra: serde_json::Value) -> T {
     serde_json::from_value(fields).unwrap()
 }
 
+fn http_record(method: &str, body: &[u8]) -> Http {
+    record(
+        serde_json::json!({"method":method,"host":"Example.COM","uri":"/%41","referer":"","version":"1.1","user_agent":"","request_len":0,"response_len":0,"status_code":200,"status_msg":"OK","username":"","password":"","cookie":"","content_encoding":"","content_type":"","cache_control":"","filenames":[],"mime_types":[],"body":body,"state":"","request_header_names":[],"accept":"","connection":"","accept_encoding":"","accept_language":"","pragma":""}),
+    )
+}
+
+#[test]
+fn negated_request_body_does_not_match_records_without_request_data() {
+    for pattern in [r#"content:!"x";"#, r#"pcre:!"/x/";"#] {
+        let converted = accepted(&format!("flow:to_server; file.data; {pattern}"));
+        let compiled = compile(converted.rules).unwrap();
+        let mut matcher = compiled.matcher();
+        for (method, body, matches) in [
+            ("GET", b"".as_slice(), false),
+            ("GET", b"good", false),
+            ("POST", b"", false),
+            ("POST", b"good", true),
+            ("POST", b"x", false),
+        ] {
+            assert_eq!(
+                !matcher
+                    .matches(&http_record(method, body), &[])
+                    .unwrap()
+                    .is_empty(),
+                matches,
+                "{method}, {body:?}, {pattern}"
+            );
+        }
+    }
+}
+
 #[test]
 fn converted_rules_match_all_five_giganto_record_kinds() {
     let text = [
@@ -1227,9 +1364,7 @@ fn converted_rules_match_all_five_giganto_record_kinds() {
     let compiled = compile(converted.rules).unwrap();
     let home = ["10.0.0.0/8".parse::<Cidr>().unwrap()];
     let mut matcher = compiled.matcher();
-    let http: Http = record(
-        serde_json::json!({"method":"GET","host":"Example.COM","uri":"/%41","referer":"","version":"1.1","user_agent":"","request_len":0,"response_len":0,"status_code":200,"status_msg":"OK","username":"","password":"","cookie":"","content_encoding":"","content_type":"","cache_control":"","filenames":[],"mime_types":[],"body":[112,97,121,108,111,97,100],"state":"","request_header_names":[],"accept":"","connection":"","accept_encoding":"","accept_language":"","pragma":""}),
-    );
+    let http = http_record("GET", b"payload");
     assert_eq!(
         matcher
             .matches(&http, &home)

@@ -120,27 +120,24 @@ fn rank(value: &str) -> usize {
 /// Joins physical lines and preserves the first physical line number.
 pub(super) fn lines(bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
     let mut result = Vec::new();
-    let mut pending = Vec::new();
-    let mut first = 0;
-    for (index, line) in bytes.split(|b| *b == b'\n').enumerate() {
-        let line = line.trim_ascii();
-        if line.is_empty() || line.starts_with(b"#") {
+    let mut pending: Option<(usize, Vec<u8>)> = None;
+    for (index, line) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let trimmed = line.trim_ascii();
+        if pending.is_none() && (trimmed.is_empty() || trimmed.starts_with(b"#")) {
             continue;
         }
-        if pending.is_empty() {
-            first = index + 1;
-        }
-        if let Some(part) = line.strip_suffix(b"\\") {
-            pending.extend_from_slice(part);
-            pending.push(b' ');
+        let (_, buffer) = pending.get_or_insert_with(|| (index + 1, Vec::new()));
+        // Suricata 7.0.3 DetectLoadSigFile replaces the trailing backslash
+        // with the next physical line, preserving its bytes and indentation.
+        if let Some(part) = line.trim_ascii_end().strip_suffix(b"\\") {
+            buffer.extend_from_slice(part);
         } else {
-            pending.extend_from_slice(line);
-            result.push((first, std::mem::take(&mut pending)));
+            buffer.extend_from_slice(line);
+            result.extend(pending.take());
         }
     }
-    if !pending.is_empty() {
-        result.push((first, pending));
-    }
+    result.extend(pending);
     result
 }
 

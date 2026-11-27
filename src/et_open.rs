@@ -1,6 +1,6 @@
 //! ET Open bundle reading and conversion, without network access.
 
-use std::{fmt::Write as _, io::Read};
+use std::{collections::HashMap, fmt::Write as _, io::Read};
 
 use flate2::read::MultiGzDecoder;
 use jiff::civil::Date;
@@ -162,7 +162,7 @@ pub fn convert_et_open(
     let bundle = read_bundle(bundle, version_number)?;
     let mut summary = ConversionSummary::new(Source::EtOpen, bundle.version);
     let mut rules = Vec::new();
-    let mut partial_headers = Vec::new();
+    let mut partial_headers: HashMap<String, Vec<_>> = HashMap::new();
     for file in bundle.files {
         for (line_number, line) in parse::lines(&file.bytes) {
             let sid = parse::sid(&line);
@@ -184,9 +184,15 @@ pub fn convert_et_open(
                 Ok((rule, partial_header)) => {
                     // Every generated field is chosen from the static buffer map.
                     // A failure here is an implementation defect, not source syntax.
-                    assert!(unknown_fields(&rule).is_ok_and(|fields| fields.is_empty()));
+                    assert!(
+                        unknown_fields(&rule).is_ok_and(|fields| fields.is_empty()),
+                        "ET Open conversion chooses every field from the static catalog"
+                    );
                     if partial_header {
-                        partial_headers.push(rule.clone());
+                        partial_headers
+                            .entry(rule.source_rule_id().to_string())
+                            .or_default()
+                            .push(rule.clone());
                     }
                     rules.push(rule);
                 }
@@ -199,8 +205,14 @@ pub fn convert_et_open(
     // Exclusions identify source ids, which need not be unique. Use the actual
     // accepted rules rather than removing every occurrence of an excluded id.
     let rules: Vec<_> = compiled.rules().cloned().collect();
-    summary.header_values_partly_missing =
-        rules.iter().filter(|r| partial_headers.contains(r)).count();
+    summary.header_values_partly_missing = rules
+        .iter()
+        .filter(|r| {
+            partial_headers
+                .get(r.source_rule_id())
+                .is_some_and(|candidates| candidates.contains(r))
+        })
+        .count();
     Ok(Conversion { rules, summary })
 }
 

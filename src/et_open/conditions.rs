@@ -39,6 +39,13 @@ impl Detection {
         id
     }
 
+    fn present_not(&mut self, field: &str, expr: String) -> String {
+        // Suricata 7.0.3 DetectEngineInspectBufferGeneric does not inspect
+        // a missing buffer, even for a negated match. Empty values still exist.
+        let present = self.leaf(field, "|exists", "true");
+        and(vec![present, not(expr)])
+    }
+
     fn truth(&mut self) -> String {
         if let Some(value) = &self.truth {
             return value.clone();
@@ -487,7 +494,11 @@ fn chain_condition(
             };
             let modifier = format!("{modifier}{}", if first.nocase { "" } else { "|cased" });
             let expr = detection.leaf(field, &modifier, &byte_value(&bytes));
-            return Ok(if first.negated { not(expr) } else { expr });
+            return Ok(if first.negated {
+                detection.present_not(field, expr)
+            } else {
+                expr
+            });
         }
     }
     if chain.iter().any(|p| p.negated) {
@@ -498,11 +509,12 @@ fn chain_condition(
             && let Value::Pcre { expression, flags } = &first.value
         {
             let (expression, caseless) = pcre_fragment(expression, flags, true)?;
-            return Ok(not(detection.leaf(
+            let expr = detection.leaf(
                 field,
                 if caseless { "|re|i" } else { "|re" },
                 &quote(&expression),
-            )));
+            );
+            return Ok(detection.present_not(field, expr));
         }
         return Err(error(reason::UNSUPPORTED_REGEX));
     }

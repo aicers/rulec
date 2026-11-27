@@ -42,7 +42,8 @@
 //! `botcc`, `botcc.portgrouped`, `ciarmy`, `compromised`, `drop`, `dshield`,
 //! `tor`, and `threatview*` are excluded, as are comments and blank lines.
 //! Exclusions do not count as dropped rules. Continuations ending in `\`
-//! are joined and retain their first physical line number.
+//! are joined without inserting whitespace, preserving the next line's
+//! indentation and any `#` bytes, and retain their first physical line number.
 //!
 //! Every dropped rule has exactly one reason, in this precedence order:
 //!
@@ -77,6 +78,13 @@
 //! are dropped rather than matched with a different engine. HOME_NET stays
 //! dynamic (`addr|expand|cidr: '%home_net%'`); other network and port
 //! variables use the Suricata 7.0.3 default configuration.
+//!
+//! Independent negated content and PCRE require the field to exist before
+//! negating the match, so an absent buffer never satisfies them. An existing
+//! empty value can satisfy a negated match. Raw string fields such as
+//! `user_agent` store both an absent header and a present empty header as
+//! an empty string; the record cannot distinguish those cases, and the
+//! converter treats both as an existing empty buffer.
 //!
 //! An initial PCRE `R` flag searches from cursor zero. Later relative PCRE
 //! beginning/word assertions are rejected because they see a sliced subject
