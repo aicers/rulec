@@ -131,7 +131,12 @@ def run_suricata(work, output, manifest=HERE / "pcaps.json", get=fetch, execute=
         raise ValueError("expected exactly Suricata 7.0.3")
     archive = work / "et.tar.gz"
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    save(work / "suricata.json", {"version": match[1], "et_archive_sha256": digest, "home_net": HOME_NET})
+    config = ["-c", "/etc/suricata/suricata.yaml", "--include", str(HERE / "suricata.yaml"), "--set", "vars.address-groups.HOME_NET=[" + ",".join(HOME_NET) + "]"]
+    effective = execute(["suricata", *config, "--dump-config"], capture_output=True, text=True, check=True).stdout
+    home_net = re.search(r"^vars\.address-groups\.HOME_NET = \[([^\]]*)\]$", effective, re.MULTILINE)
+    if not home_net or [part.strip() for part in home_net[1].split(",")] != HOME_NET:
+        raise ValueError("Suricata effective HOME_NET does not match the comparison networks")
+    save(work / "suricata.json", {"version": match[1], "et_archive_sha256": digest, "home_net": [part.strip() for part in home_net[1].split(",")]})
     # Never extract archive paths. The same bytes used by rulec supply only the
     # documented included rule files to Suricata. These files remain ephemeral.
     rules = work / "suricata.rules"
@@ -148,7 +153,7 @@ def run_suricata(work, output, manifest=HERE / "pcaps.json", get=fetch, execute=
             path = checked_pcap(entry, work, get)
             log = work / entry["name"]
             log.mkdir(parents=True, exist_ok=True)
-            command = ["suricata", "--runmode", "single", "-c", "/etc/suricata/suricata.yaml", "--include", str(HERE / "suricata.yaml"), "--set", "vars.address-groups.HOME_NET=[" + ",".join(HOME_NET) + "]", "--init-errors-fatal", "-S", str(rules.resolve()), "-r", str(path.resolve()), "-l", str(log.resolve()), "-k", "none"]
+            command = ["suricata", "--runmode", "single", *config, "--init-errors-fatal", "-S", str(rules.resolve()), "-r", str(path.resolve()), "-l", str(log.resolve()), "-k", "none"]
             result = execute(command, capture_output=True, text=True)
             # Suricata diagnostics may contain entire rejected signatures. Do not
             # copy them into results, console logs, or uploaded artifacts.
@@ -305,7 +310,7 @@ def finish(output, previous=None, baseline_error=None):
     for scope, rules in differential.get("coverage", {}).items():
         rejected = differential.get("no_comparable_rules", {}).get(scope)
         if rejected:
-            lines.append(f'- {scope}: 비교 가능한 규칙 없음 (no comparable rule); ' + ", ".join(f'{r["sid"]} ({r["reason"]})' for r in rejected))
+            lines.append(f'- {scope}: 견줄 규칙 없음; ' + ", ".join(f'{r["sid"]} ({r["reason"]})' for r in rejected))
         else:
             lines.append(f'- {scope}: ' + (", ".join(f'{r["sid"]} ({r["classification"]})' for r in rules) or "견준 규칙 없음"))
     for excluded in differential.get("excluded_pcaps", []):

@@ -1,17 +1,47 @@
 [
   {
+    "name": "http-request",
+    "url": "https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/tests/http-body-inspect/http-aptget-ids-02-s2.pcap",
+    "sha256": "f1395497588a7e6beb2975578d66c09607ebbf7dbab70dceb34a1152b7f6bd41",
+    "source": "https://github.com/OISF/suricata-verify/tree/923478ed7df163c6b126a07e841bc38ecba045d8/tests/http-body-inspect",
+    "license": "MIT; retain copyright and permission notice: https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/LICENSE.txt",
+    "coverage": [
+      "Http request to_server (APT package download user agent)"
+    ]
+  },
+  {
     "name": "protocol-probes",
     "url": "https://raw.githubusercontent.com/{repository}/{revision}/.github/daily/pcaps/protocol-probes.pcap",
     "sha256": "a83523056a568e6de11667b0bd6111858408a48561ac59ebcb1f12abca7d438c",
     "source": "rulec public synthetic protocol corpus; .github/daily/make_probes.py",
     "license": "Apache-2.0; retain LICENSE and copyright notice when redistributing",
     "coverage": [
-      "Http request to_server",
-      "Http response to_client (502 and response body)",
-      "Ssh server banner to_client",
-      "Dns query to_server"
+      "Http request to_server (synthetic)",
+      "Http response to_client (fixed synthetic 502 response and body; documented issue deviation)",
+      "Ssh server banner to_client (synthetic)",
+      "Dns query to_server (synthetic)"
     ],
     "bundled_path": ".github/daily/pcaps/protocol-probes.pcap"
+  },
+  {
+    "name": "dns-tunnel",
+    "url": "https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/tests/dns/bug-1158/input.pcap",
+    "sha256": "02faa5d09332b86d0fa55f17e4b28f9f910b98f180fcc73fca9040fee172d031",
+    "source": "https://github.com/OISF/suricata-verify/tree/923478ed7df163c6b126a07e841bc38ecba045d8/tests/dns/bug-1158",
+    "license": "MIT; retain copyright and permission notice: https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/LICENSE.txt",
+    "coverage": [
+      "Dns query to_server (DNS2TCP authentication and connect)"
+    ]
+  },
+  {
+    "name": "ssh-banner",
+    "url": "https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/tests/ssh-banner-only/input.pcap",
+    "sha256": "b5071379c736c7ea46db8814c787a214ad7eea5466db680ae11c7a2f2aed226e",
+    "source": "https://github.com/OISF/suricata-verify/tree/923478ed7df163c6b126a07e841bc38ecba045d8/tests/ssh-banner-only",
+    "license": "MIT; retain copyright and permission notice: https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/LICENSE.txt",
+    "coverage": [
+      "Ssh server banner to_client"
+    ]
   },
   {
     "name": "tls-glupteba",

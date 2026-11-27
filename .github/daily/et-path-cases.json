@@ -1,0 +1,86 @@
+[
+  {
+    "path": "rules/emerging-web_client.rules",
+    "included": true
+  },
+  {
+    "path": "./rules/emerging-dns.rules",
+    "included": true
+  },
+  {
+    "path": "././rules/emerging-policy.rules",
+    "included": true
+  },
+  {
+    "path": "rules/emerging-retired.rules",
+    "included": false
+  },
+  {
+    "path": "rules/botcc.rules",
+    "included": false
+  },
+  {
+    "path": "rules/botcc.portgrouped.rules",
+    "included": false
+  },
+  {
+    "path": "rules/ciarmy.rules",
+    "included": false
+  },
+  {
+    "path": "rules/compromised.rules",
+    "included": false
+  },
+  {
+    "path": "rules/drop.rules",
+    "included": false
+  },
+  {
+    "path": "rules/dshield.rules",
+    "included": false
+  },
+  {
+    "path": "rules/tor.rules",
+    "included": false
+  },
+  {
+    "path": "rules/threatview.rules",
+    "included": false
+  },
+  {
+    "path": "rules/threatview-any.rules",
+    "included": false
+  },
+  {
+    "path": "rules/nested/a.rules",
+    "included": false
+  },
+  {
+    "path": "elsewhere/a.rules",
+    "included": false
+  },
+  {
+    "path": "rules/a.txt",
+    "included": false
+  },
+  {
+    "path": "rules/a.rules.gz",
+    "included": false
+  },
+  {
+    "path": "rules/../a.rules",
+    "included": false
+  },
+  {
+    "path": "rules//a.rules",
+    "included": false
+  },
+  {
+    "path": "rules/a.RULES",
+    "included": false
+  },
+  {
+    "path": "./rules/a.rules",
+    "included": true
+  }
+]

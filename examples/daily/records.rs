@@ -167,7 +167,64 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
                 set(field, http[source].clone());
             }
             set("status_code", http["status"].clone());
-            // The record's content_type is request-side; EVE http_content_type is response-side.
+            if let Some(length) = http["length"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+            {
+                set("response_len", json!(length));
+            }
+            // Dumped request headers preserve names, order and request-side values.
+            // A complete list also proves that an absent header has an empty value.
+            if let Some(headers) = http["request_headers"].as_array() {
+                let names: Vec<_> = headers.iter().filter_map(|h| h["name"].as_str()).collect();
+                set("request_header_names", json!(names));
+                if names.len() != headers.len() {
+                    incomplete_fields.extend(
+                        [
+                            "request_header_names",
+                            "header_names.joined",
+                            "header_block",
+                        ]
+                        .map(str::to_owned),
+                    );
+                }
+                for (field, name) in [
+                    ("host", "Host"),
+                    ("user_agent", "User-Agent"),
+                    ("referer", "Referer"),
+                    ("cookie", "Cookie"),
+                    ("content_type", "Content-Type"),
+                    ("content_encoding", "Content-Encoding"),
+                    ("cache_control", "Cache-Control"),
+                    ("accept", "Accept"),
+                    ("connection", "Connection"),
+                    ("accept_encoding", "Accept-Encoding"),
+                    ("accept_language", "Accept-Language"),
+                    ("pragma", "Pragma"),
+                ] {
+                    let values: Vec<_> = headers
+                        .iter()
+                        .filter(|h| {
+                            h["name"]
+                                .as_str()
+                                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                        })
+                        .collect();
+                    match values.as_slice() {
+                        [] if names.len() == headers.len() => set(field, json!("")),
+                        [header] if header["value"].is_string() => {
+                            set(field, header["value"].clone());
+                        }
+                        _ => {
+                            // A scalar record cannot preserve distinct duplicate values.
+                            incomplete_fields.push(field.to_owned());
+                            if name != "Cookie" {
+                                incomplete_fields.push("header_block".to_owned());
+                            }
+                        }
+                    }
+                }
+            }
         }
         RawEventKind::Dns => {
             let dns = &eve["dns"];
@@ -287,6 +344,7 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
     }
     // Derived values depend on these raw fields. Preserve missingness separately
     // from giganto's unavoidable empty/zero representation.
+    missing.extend(incomplete_fields.iter().cloned());
     for (derived, dependencies) in [
         ("uri.normalized", &["uri"][..]),
         ("host.normalized", &["host"][..]),
@@ -328,11 +386,12 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
         ("server.proto", &["server"][..]),
         ("server.software", &["server"][..]),
     ] {
-        if !dependencies.iter().any(|d| missing.contains(*d)) {
+        if !dependencies.iter().any(|d| missing.contains(*d))
+            && !incomplete_fields.iter().any(|field| field == derived)
+        {
             missing.remove(derived);
         }
     }
-    missing.extend(incomplete_fields);
     let data = Value::Object(data);
     let value: Box<dyn Event> = match kind {
         RawEventKind::Conn => Box::new(serde_json::from_value::<Conn>(data)?),
@@ -403,6 +462,103 @@ mod tests {
         assert!(record.missing.contains("body.response"));
         assert!(record.value.field("body.response").is_empty());
     }
+    #[test]
+    fn http_request_headers_preserve_values_names_and_absence() {
+        let event = json!({"event_type":"http", "http":{
+            "hostname":"example.invalid", "http_content_type":"response/type", "length":42,
+            "request_headers":[
+                {"name":"Host", "value":"example.invalid:8080"},
+                {"name":"aCcEpT", "value":"text/plain"},
+                {"name":"Cookie", "value":"session=public"},
+                {"name":"Content-Type", "value":"request/type"},
+                {"name":"Content-Encoding", "value":"gzip"},
+                {"name":"Cache-Control", "value":"no-cache"},
+                {"name":"Connection", "value":"close"},
+                {"name":"Accept-Encoding", "value":"gzip, deflate"},
+                {"name":"Accept-Language", "value":"en"},
+                {"name":"Pragma", "value":"no-cache"}
+            ]
+        }});
+        let record = make(&event, &flow()).unwrap().unwrap();
+        for (field, expected) in [
+            ("host", "example.invalid:8080"),
+            ("accept", "text/plain"),
+            ("cookie", "session=public"),
+            ("content_type", "request/type"),
+            ("content_encoding", "gzip"),
+            ("cache_control", "no-cache"),
+            ("connection", "close"),
+            ("accept_encoding", "gzip, deflate"),
+            ("accept_language", "en"),
+            ("pragma", "no-cache"),
+        ] {
+            assert!(!record.missing.contains(field), "{field}");
+            assert!(
+                matches!(record.value.field(field).first(),
+                Some(FieldValue::Bytes(bytes)) if bytes.as_ref() == expected.as_bytes()),
+                "{field}"
+            );
+        }
+        for field in [
+            "user_agent",
+            "referer",
+            "request_header_names",
+            "header_names.joined",
+            "header_block",
+            "response_len",
+        ] {
+            assert!(!record.missing.contains(field), "{field}");
+        }
+        assert!(record.missing.contains("request_len"));
+        assert!(matches!(
+            record.value.field("response_len").first(),
+            Some(FieldValue::Int(42))
+        ));
+        assert!(matches!(record.value.field("header_names.joined").first(),
+            Some(FieldValue::Bytes(bytes)) if bytes.starts_with(b"\r\nHost\r\naCcEpT\r\nCookie\r\n")));
+        assert!(matches!(record.value.field("header_block").first(),
+            Some(FieldValue::Bytes(bytes)) if bytes.starts_with(b"Host: example.invalid:8080\r\naCcEpT: text/plain\r\nContent-Type: request/type\r\n")));
+    }
+
+    #[test]
+    fn http_unavailable_and_incomplete_headers_keep_input_limits() {
+        for http in [json!({}), json!({"request_headers":null})] {
+            let record = make(&json!({"event_type":"http", "http":http}), &flow())
+                .unwrap()
+                .unwrap();
+            assert!(record.missing.contains("request_header_names"));
+            assert!(record.missing.contains("header_block"));
+        }
+        for headers in [
+            json!([{"value":"lost name"}]),
+            json!([{"name":"Accept"}]),
+            json!([{"name":"Accept","value":"a"},{"name":"accept","value":"b"}]),
+        ] {
+            let record = make(
+                &json!({"event_type":"http", "http":{"request_headers":headers}}),
+                &flow(),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(record.missing.contains("accept"));
+            assert!(record.missing.contains("header_block"));
+        }
+        let record = make(
+            &json!({"event_type":"http", "http":{"request_headers":[]}}),
+            &flow(),
+        )
+        .unwrap()
+        .unwrap();
+        for field in [
+            "request_header_names",
+            "header_names.joined",
+            "header_block",
+            "accept",
+        ] {
+            assert!(!record.missing.contains(field), "{field}");
+        }
+    }
+
     #[test]
     fn tls_dates_and_ambiguous_names_have_documented_provenance() {
         let event = json!({"event_type":"tls", "tls":{

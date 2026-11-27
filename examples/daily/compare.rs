@@ -676,6 +676,34 @@ mod tests {
     }
 
     #[test]
+    fn extracted_headers_do_not_hide_suricata_only_mismatches() {
+        let record = records::make(
+            &json!({"event_type":"http", "http":{"request_headers":[
+                {"name":"Host", "value":"example.invalid"},
+                {"name":"Accept", "value":"text/plain"}
+            ]}}),
+            &json!({}),
+        )
+        .unwrap()
+        .unwrap();
+        let mut rule = info("1");
+        rule.fields = vec!["header_block".into(), "header_names.joined".into()];
+        let mut available = evidence();
+        available.first_mut().unwrap().missing = record.missing;
+        let result = classify(
+            &[rule],
+            &BTreeMap::from([(key("1", 1), evidence())]),
+            &BTreeMap::new(),
+            &BTreeMap::from([(("sample".into(), 1, "Http".into()), available)]),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let mismatch = result.rules.first().unwrap();
+        assert_eq!(mismatch.classification, "suricata_only");
+        assert!(!mismatch.input_limit);
+    }
+
+    #[test]
     fn classifies_pairs_rules_marks_drops_and_empty_coverage() {
         let mut infos: Vec<_> = ["1", "2", "3", "4", "5"].map(info).into();
         infos.get_mut(1).unwrap().partial_header = true;

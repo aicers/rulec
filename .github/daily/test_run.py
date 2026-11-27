@@ -139,6 +139,8 @@ class DailyTests(unittest.TestCase):
             def execute(command, **kwargs):
                 if command == ["suricata", "-V"]:
                     return SimpleNamespace(stdout="This is Suricata version 7.0.3 RELEASE", returncode=0)
+                if "--dump-config" in command:
+                    return SimpleNamespace(stdout="vars.address-groups.HOME_NET = [" + ",".join(run.HOME_NET) + "]\n", returncode=0)
                 executions.append(command)
                 log = Path(command[command.index("-l") + 1])
                 (log / "eve.json").write_text("")
@@ -151,13 +153,36 @@ class DailyTests(unittest.TestCase):
             self.assertEqual(len(executions), 1)
             self.assertIn("--init-errors-fatal", executions[0])
 
-    def test_public_manifest_and_reproducible_synthetic_capture(self):
+    def test_public_manifest_is_pinned_with_provenance(self):
         for entry in run.load(run.HERE / "pcaps.json"):
             self.assertTrue(all(entry.get(k) for k in ["name", "url", "sha256", "source", "license", "coverage"]))
             self.assertRegex(entry["sha256"], r"^[a-f0-9]{64}$")
-        fixture = (run.HERE / "pcaps/protocol-probes.pcap").read_bytes()
-        self.assertEqual(make_probes.generate(), fixture)
-        self.assertEqual(hashlib.sha256(fixture).hexdigest(), run.load(run.HERE / "pcaps.json")[0]["sha256"])
+            if "bundled_path" in entry:
+                fixture = (run.HERE / "pcaps" / Path(entry["bundled_path"]).name).read_bytes()
+                self.assertEqual(make_probes.generate(), fixture)
+                self.assertEqual(hashlib.sha256(fixture).hexdigest(), entry["sha256"])
+            else:
+                self.assertRegex(entry["url"], r"^https://raw.githubusercontent.com/OISF/suricata-verify/[a-f0-9]{40}/")
+
+    def test_et_selection_matches_shared_path_cases(self):
+        for case in run.load(run.HERE / "et-path-cases.json"):
+            self.assertEqual(run.included_et(case["path"]), case["included"], case["path"])
+
+    def test_effective_suricata_networks_are_verified(self):
+        with tempfile.TemporaryDirectory() as name:
+            work = Path(name)
+            run.save(work / "conversion.json", [report("et_open")])
+            (work / "et.tar.gz").write_bytes(b"not opened before config validation")
+            for networks in ["[10.0.0.0/8]", "any", ""]:
+                def execute(command, **kwargs):
+                    if command == ["suricata", "-V"]:
+                        return SimpleNamespace(stdout="This is Suricata version 7.0.3 RELEASE")
+                    self.assertIn("--dump-config", command)
+                    self.assertIn("vars.address-groups.HOME_NET=[" + ",".join(run.HOME_NET) + "]", command)
+                    return SimpleNamespace(stdout="vars.address-groups.HOME_NET = " + networks)
+                with self.assertRaisesRegex(ValueError, "effective HOME_NET"):
+                    run.run_suricata(work, work, execute=execute)
+                self.assertFalse((work / "suricata.json").exists())
 
     def test_wrong_suricata_version_is_rejected_before_any_replay(self):
         for version in ["7.0.30", "8.0.3", "unknown"]:
@@ -182,6 +207,8 @@ class DailyTests(unittest.TestCase):
             def execute(command, **kwargs):
                 if command == ["suricata", "-V"]:
                     return SimpleNamespace(stdout="This is Suricata version 7.0.3 RELEASE")
+                if "--dump-config" in command:
+                    return SimpleNamespace(stdout="vars.address-groups.HOME_NET = [" + ",".join(run.HOME_NET) + "]\n", returncode=0)
                 executions.append(command)
                 log = Path(command[command.index("-l") + 1])
                 if log.name == "bad":
@@ -362,7 +389,7 @@ class DailyTests(unittest.TestCase):
             self.assertFalse(run.finish(output))
             self.assertFalse(run.load(output / "status.json")["failed"])
             summary = (output / "summary.md").read_text()
-            self.assertIn("ssh_server_banner: 비교 가능한 규칙 없음 (no comparable rule)", summary)
+            self.assertIn("ssh_server_banner: 견줄 규칙 없음", summary)
             self.assertIn("91 (needs_state)", summary)
             self.assertIn("92 (unsupported_regex)", summary)
 

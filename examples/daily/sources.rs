@@ -262,6 +262,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn et_selection_matches_shared_path_cases() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../.github/daily/et-path-cases.json")).unwrap();
+        for case in cases {
+            let path = case["path"].as_str().unwrap();
+            assert_eq!(included_et(path).is_some(), case["included"], "{path}");
+        }
+    }
+
+    #[test]
     fn counts_only_documented_et_scope_and_joins_continuations() {
         assert!(included_et("./rules/emerging-dns.rules").is_some());
         for path in [

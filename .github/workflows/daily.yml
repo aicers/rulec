@@ -10,12 +10,12 @@ on:
       - '.github/daily/**'
       - 'examples/daily.rs'
       - 'examples/daily/**'
-      - 'src/**'
-      - 'data/**'
       - 'Cargo.toml'
       - 'docs/daily.md'
 
-# One run across all triggers/branches; queued runs never cancel the baseline.
+# Serialize all triggers. Only the running execution is protected; GitHub replaces
+# a pending execution when another run enters this group. Limit PR triggers above
+# to this workflow and its tools to reduce displacement of scheduled runs.
 concurrency:
   group: rulec-daily
   cancel-in-progress: false
@@ -50,7 +50,7 @@ jobs:
         run: python3 .github/daily/run.py download
       - name: Convert and audit all sources independently
         run: target/release/examples/daily convert daily-work daily-results
-      - name: Replay verified public pcaps
+      - name: Replay verified pcaps
         env:
           SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
