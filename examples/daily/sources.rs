@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
     io::{Cursor, Read},
@@ -107,18 +107,34 @@ fn sigma_count(bytes: &[u8], emerging: bool) -> Result<usize> {
     } else {
         "rules"
     };
+    let directory = format!("{root}/");
+    let roots: BTreeSet<_> = zip
+        .file_names()
+        .filter_map(|name| name.split_once('/').map(|(root, _)| root))
+        .collect();
+    let selected = if zip.file_names().any(|name| name.starts_with(&directory)) {
+        directory
+    } else if let Some(wrapper) = roots.first().filter(|_| roots.len() == 1) {
+        format!("{wrapper}/{directory}")
+    } else {
+        directory
+    };
     let mut count = 0;
     for n in 0..zip.len() {
         let mut file = zip.by_index(n)?;
         if !file.is_file() {
             continue;
         }
-        let parts: Vec<_> = file.name().split('/').collect();
-        let relative = match parts.as_slice() {
-            [first, rest @ ..] if *first == root => rest,
-            [_, second, rest @ ..] if *second == root => rest,
-            _ => continue,
+        let Some(path) = file.name().strip_prefix(&selected) else {
+            continue;
         };
+        let relative: Vec<_> = path.split('/').collect();
+        if relative
+            .iter()
+            .any(|part| matches!(*part, "" | "." | "..") || part.contains('\\'))
+        {
+            continue;
+        }
         let Some(name) = relative.last() else {
             continue;
         };
@@ -321,6 +337,37 @@ mod tests {
         assert_eq!(sigma_count(&bytes, false).unwrap(), 2);
         assert_eq!(sigma_count(&bytes, true).unwrap(), 1);
     }
+
+    #[test]
+    fn sigma_count_selects_root_or_sole_wrapper_without_mixing_them() {
+        use std::io::Write;
+        for (paths, expected) in [
+            (vec!["rules/a.yml", "other/rules/b.yml"], 1),
+            (vec!["one/rules/a.yml", "two/rules/b.yml"], 0),
+            (vec!["only/rules/a.yml", "only/README.md"], 1),
+            (vec!["rules/../a.yml", "rules//b.yml", "rules/./c.yml"], 0),
+        ] {
+            for emerging in [false, true] {
+                let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                for path in &paths {
+                    let path = if emerging {
+                        path.replace("rules/", "rules-emerging-threats/")
+                    } else {
+                        (*path).to_owned()
+                    };
+                    zip.start_file(path, zip::write::SimpleFileOptions::default())
+                        .unwrap();
+                    zip.write_all(b"status: stable").unwrap();
+                }
+                let bytes = zip.finish().unwrap().into_inner();
+                assert_eq!(
+                    sigma_count(&bytes, emerging).unwrap(),
+                    expected,
+                    "{paths:?}"
+                );
+            }
+        }
+    }
     #[test]
     fn source_failures_preserve_other_reports_and_et_skip_reason() {
         use std::io::Write;
@@ -357,6 +404,41 @@ mod tests {
         assert_eq!(reports.first().unwrap().input_count, 1);
         assert!(reports.get(1).unwrap().error.is_some());
         assert!(input.join("et.bundle").exists());
+        for (path, root, emerging) in [
+            ("sigma.zip", "rules", false),
+            ("emerging.zip", "rules-emerging-threats", true),
+        ] {
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let mut options = zip::write::FullFileOptions::default();
+            if emerging {
+                zip.set_comment("0123456789abcdef0123456789abcdef01234567")
+                    .unwrap();
+                let mut extra = vec![1];
+                extra.extend_from_slice(&1_783_598_400_u32.to_le_bytes());
+                options
+                    .add_extra_data(0x5455, extra.into_boxed_slice(), false)
+                    .unwrap();
+            }
+            zip.start_file(format!("{root}/test.yml"), options).unwrap();
+            zip.write_all(b"id: daily-test\ntitle: synthetic daily test\nlogsource: {category: proxy}\ndetection:\n  selection: {c-uri: /probe}\n  condition: selection\n")
+                .unwrap();
+            if !emerging {
+                zip.start_file("version.txt", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"Release Date: 2026-07-09\nLabel: test\n")
+                    .unwrap();
+            }
+            fs::write(input.join(path), zip.finish().unwrap().into_inner()).unwrap();
+        }
+        write(
+            &input.join("sources.json"),
+            &serde_json::json!([
+                {"source":"et_open","path":"et.tar.gz","version":"1","error":null},
+                {"source":"sigma_hq","path":"sigma.zip","version":"release-tag","error":null},
+                {"source":"sigma_hq_emerging","path":"emerging.zip","version":null,"error":null}
+            ]),
+        )
+        .unwrap();
         fs::write(input.join("et.tar.gz"), b"corrupt").unwrap();
         run(&input, &output).unwrap();
         super::super::compare::run(&input, &output).unwrap();
@@ -365,6 +447,23 @@ mod tests {
         assert!(differential["reason"].as_str().unwrap().contains("ET Open"));
         let reports: Vec<Report> = read(&output.join("conversion.json")).unwrap();
         assert_eq!(reports.len(), 3);
-        assert!(reports.iter().all(|report| report.error.is_some()));
+        assert!(reports.first().unwrap().error.is_some());
+        for report in reports.iter().skip(1) {
+            assert!(report.error.is_none(), "{:?}", report.error);
+            assert_eq!(report.input_count, 1);
+            assert_eq!(report.accepted_ids, vec!["daily-test"]);
+        }
+        assert_eq!(
+            reports
+                .get(1)
+                .unwrap()
+                .summary
+                .as_ref()
+                .unwrap()
+                .source_version
+                .release_name
+                .as_deref(),
+            Some("release-tag")
+        );
     }
 }

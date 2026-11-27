@@ -159,6 +159,45 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(make_probes.generate(), fixture)
         self.assertEqual(hashlib.sha256(fixture).hexdigest(), run.load(run.HERE / "pcaps.json")[0]["sha256"])
 
+    def test_wrong_suricata_version_is_rejected_before_any_replay(self):
+        for version in ["7.0.30", "8.0.3", "unknown"]:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as name:
+                work = Path(name)
+                run.save(work / "conversion.json", [report("et_open")])
+                execute = mock.Mock(return_value=SimpleNamespace(stdout=f"This is Suricata version {version} RELEASE"))
+                with self.assertRaisesRegex(ValueError, "exactly Suricata 7.0.3"):
+                    run.run_suricata(work, work, execute=execute)
+                execute.assert_called_once_with(["suricata", "-V"], capture_output=True, text=True, check=True)
+                self.assertFalse((work / "suricata.rules").exists())
+
+    def test_replay_failure_preserves_other_pcaps_without_signature_diagnostics(self):
+        with tempfile.TemporaryDirectory() as name:
+            work = Path(name)
+            run.save(work / "conversion.json", [report("et_open")])
+            with tarfile.open(work / "et.tar.gz", "w:gz"):
+                pass
+            entries = [{"name": label, "url": "https://example.test/" + label, "sha256": hashlib.sha256(b"pcap").hexdigest()} for label in ["bad", "good"]]
+            run.save(work / "manifest.json", entries)
+            executions = []
+            def execute(command, **kwargs):
+                if command == ["suricata", "-V"]:
+                    return SimpleNamespace(stdout="This is Suricata version 7.0.3 RELEASE")
+                executions.append(command)
+                log = Path(command[command.index("-l") + 1])
+                if log.name == "bad":
+                    return SimpleNamespace(returncode=1, stdout="alert tcp secret signature", stderr="detection: converted signature")
+                (log / "eve.json").write_text("")
+                return SimpleNamespace(returncode=0)
+            run.run_suricata(work, work, work / "manifest.json", lambda _: b"pcap", execute)
+            results = run.load(work / "pcap-runs.json")
+            self.assertEqual(results[0]["error"], "Suricata exited 1")
+            self.assertIsNone(results[0]["eve"])
+            self.assertIsNone(results[1]["error"])
+            self.assertEqual(len(executions), 2)
+            text = json.dumps(results)
+            self.assertNotIn("alert tcp", text)
+            self.assertNotIn("detection:", text)
+
     def test_first_run_and_deltas_including_new_ids(self):
         first = report("et_open")
         self.assertTrue(run.delta([first], None)["first_run"])
@@ -249,6 +288,27 @@ class DailyTests(unittest.TestCase):
             self.assertFalse(changes["first_run"])
             self.assertIn("직전 산출물 만료", (output / "summary.md").read_text())
 
+    def test_baseline_reads_latest_scheduled_artifact_with_scoped_authentication(self):
+        previous = [report("et_open")]
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            archive.writestr("conversion.json", json.dumps(previous))
+        class Api:
+            token = "test-token"
+            def request(self, path):
+                if "/artifacts" in path:
+                    self.artifact_path = path
+                    return {"artifacts": [{"name": run.ARTIFACT, "expired": False, "archive_download_url": "https://api.github.com/artifact"}]}
+                self.runs_path = path
+                return {"workflow_runs": [{"id": 123, "head_branch": "feature"}, {"id": 124, "head_branch": "main"}, {"id": 125, "head_branch": "main"}]}
+        api = Api()
+        with mock.patch.object(run, "fetch", return_value=data.getvalue()) as fetch:
+            self.assertEqual(run.baseline(None, api, "main"), previous)
+        self.assertIn("event=schedule&status=success", api.runs_path)
+        self.assertIn("branch=main", api.runs_path)
+        self.assertEqual(api.artifact_path, "/actions/runs/124/artifacts?per_page=100")
+        fetch.assert_called_once_with("https://api.github.com/artifact", "test-token")
+
     def test_missing_coverage_and_excluded_pcaps_fail_but_mismatches_do_not(self):
         with tempfile.TemporaryDirectory() as name:
             output = Path(name)
@@ -260,19 +320,19 @@ class DailyTests(unittest.TestCase):
                 self.assertTrue(run.finish(output))
                 self.assertIn(error, (output / "summary.md").read_text())
 
-    def test_all_rejected_scope_is_named_with_reasons_without_failing(self):
+    def test_all_rejected_scope_is_named_with_reasons_and_fails(self):
         with tempfile.TemporaryDirectory() as name:
             output = Path(name)
             run.save(output / "conversion.json", [report("et_open")])
             run.save(output / "differential.json", {
-                "status": "completed", "errors": [],
+                "status": "completed", "errors": ["no compared rules in scopes: ssh_server_banner"],
                 "coverage": {"ssh_server_banner": []},
                 "no_comparable_rules": {"ssh_server_banner": [
                     {"sid": "91", "reason": "needs_state"},
                     {"sid": "92", "reason": "unsupported_regex"},
                 ]},
             })
-            self.assertFalse(run.finish(output))
+            self.assertTrue(run.finish(output))
             summary = (output / "summary.md").read_text()
             self.assertIn("ssh_server_banner: 비교 가능한 규칙 없음 (no comparable rule)", summary)
             self.assertIn("91 (needs_state)", summary)

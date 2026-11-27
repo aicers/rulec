@@ -92,6 +92,7 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
     };
     let mut data = serde_json::Map::new();
     let mut missing = BTreeSet::new();
+    let mut incomplete_names = Vec::new();
     for &field in catalog_fields(kind).ok_or("missing network catalog")? {
         let default = if matches!(field, "orig_addr" | "resp_addr") {
             json!("0.0.0.0")
@@ -225,6 +226,17 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
             // DNs stay empty instead of inventing a certificate identity.
             for (source, prefix) in [("subject", "subject"), ("issuerdn", "issuer")] {
                 if let Some(dn) = tls[source].as_str().filter(|s| !s.contains(['\\', '+'])) {
+                    let representable = if prefix == "subject" {
+                        &["C", "O", "CN"][..]
+                    } else {
+                        &["C", "O", "OU", "CN"][..]
+                    };
+                    if dn.split(", ").any(|part| {
+                        part.split_once('=')
+                            .is_none_or(|(key, _)| !representable.contains(&key))
+                    }) {
+                        incomplete_names.push(format!("{prefix}.joined"));
+                    }
                     for (key, suffix) in
                         [("C", "country"), ("O", "org_name"), ("CN", "common_name")]
                     {
@@ -323,6 +335,7 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
             missing.remove(derived);
         }
     }
+    missing.extend(incomplete_names);
     let data = Value::Object(data);
     let value: Box<dyn Event> = match kind {
         RawEventKind::Conn => Box::new(serde_json::from_value::<Conn>(data)?),
@@ -411,6 +424,23 @@ mod tests {
         let record = make(&event, &flow()).unwrap().unwrap();
         assert!(record.missing.contains("subject_common_name"));
         assert!(record.missing.contains("subject.joined"));
+    }
+
+    #[test]
+    fn unrepresented_certificate_attributes_mark_joined_names_incomplete() {
+        let event = json!({"event_type":"tls", "tls":{
+            "subject":"C=US, O=Example, OU=Lost, CN=example.invalid",
+            "issuerdn":"C=US, O=Example CA, OU=Testing, L=Lost, CN=CA"
+        }});
+        let record = make(&event, &flow()).unwrap().unwrap();
+        // All representable components are available; the omitted RDNs still
+        // make a rule using the joined buffer subject to an input limit.
+        for field in ["subject.joined", "issuer.joined"] {
+            assert!(record.missing.contains(field), "{field}");
+            assert!(!record.value.field(field).is_empty());
+        }
+        assert!(!record.missing.contains("subject_common_name"));
+        assert!(!record.missing.contains("issuer_org_unit_name"));
     }
     #[test]
     fn unrepresentable_values_stay_empty_and_marked_missing() {

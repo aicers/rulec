@@ -441,6 +441,7 @@ pub(super) fn classify(
         if !compared.is_empty() {
             continue;
         }
+        result.missing_scopes.push(scope.clone());
         let accepted = infos.iter().any(|rule| rule.scopes.contains(scope));
         if !accepted && let Some(rules) = rejected.get(scope).filter(|rules| !rules.is_empty()) {
             result.no_comparable_rules.insert(
@@ -453,10 +454,6 @@ pub(super) fn classify(
                     })
                     .collect(),
             );
-        } else {
-            // An accepted rule without a reference hit is a corpus coverage gap.
-            // An unrecognized/absent source scope is also not proof of rejection.
-            result.missing_scopes.push(scope.clone());
         }
     }
     if !result.missing_scopes.is_empty() {
@@ -741,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn all_rejected_scope_is_reported_but_accepted_uncovered_scope_fails() {
+    fn all_rejected_and_accepted_uncovered_scopes_both_fail() {
         // Neither scope nor SID is special: the decision uses this conversion's
         // accepted rules and rejection reasons, joined to the same source lines.
         let lines = vec![
@@ -774,11 +771,11 @@ mod tests {
                 .collect();
             let s = BTreeMap::from([(key("1", 1), evidence())]);
             let result = classify(&[covered], &s, &s, &BTreeMap::new(), &dropped, &rejected);
-            assert!(result.errors.is_empty(), "{:?}", result.errors);
-            assert!(result.missing_scopes.is_empty());
+            assert!(!result.errors.is_empty());
+            assert_eq!(result.missing_scopes, vec![scope.to_string()]);
             assert_eq!(result.no_comparable_rules.get(scope), rejected.get(scope));
 
-            // A single accepted rule restores the coverage requirement even if
+            // An accepted rule also needs an observed reference hit, even if
             // other rules of that same scope were rejected.
             let mut accepted = info("2");
             accepted.scopes = vec![scope.into()];
@@ -827,6 +824,35 @@ mod tests {
             &BTreeMap::new(),
         );
         assert!(result.coverage.get("ssh_server_banner").unwrap().is_empty());
+    }
+
+    #[test]
+    fn omitted_certificate_attribute_marks_suricata_only_pair() {
+        let mut rule = info("1");
+        rule.kind = "Tls".into();
+        rule.fields = vec!["subject.joined".into()];
+        rule.scopes = vec!["tls_certificate_response".into()];
+        let event = json!({"event_type":"tls", "tls":{
+            "subject":"C=US, O=Example, OU=Lost, CN=example.invalid"
+        }});
+        let record = records::make(&event, &json!({})).unwrap().unwrap();
+        let mut events = evidence();
+        let event = events.first_mut().unwrap();
+        event.kind = "Tls".into();
+        event.missing = record.missing;
+        let available = BTreeMap::from([(("sample".into(), 1, "Tls".into()), events)]);
+        let result = classify(
+            &[rule],
+            &BTreeMap::from([(key("1", 1), evidence())]),
+            &Hits::new(),
+            &available,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let rule = result.rules.first().unwrap();
+        assert_eq!(rule.classification, "suricata_only");
+        assert!(rule.input_limit);
+        assert!(rule.pairs.first().unwrap().input_limit);
     }
 
     #[test]

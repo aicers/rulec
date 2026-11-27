@@ -30,7 +30,8 @@ under `rules/`, allowing leading `./`. It excludes retired and reputation
 files exactly as listed in `src/lib.rs`; comments and blank lines are
 ignored, and backslash continuations are one rule. The independent Sigma
 reader selects release `rules/**` (excluding `deprecated` directories) or
-`rules-emerging-threats/**`, at the root or in the archive's top directory.
+`rules-emerging-threats/**`, at the root or inside a sole top-level directory.
+Root selection takes precedence; the reader never mixes several wrappers.
 YAML documents with status `deprecated` or `unsupported` are not inputs.
 Malformed selected YAML still counts as an input to be rejected.
 
@@ -85,16 +86,18 @@ TLS certificate response (`subject.joined`/`issuer.joined`), SSH server
 banner, and DNS. Each scope lists the observed accepted SIDs and their
 classifications. A direction-neutral SSH rule only establishes server
 coverage when a Suricata alert is oriented from server to client; a
-client-banner alert cannot establish that scope. When the converter accepts
-at least one rule for a scope but Suricata fires none, that coverage gap
-fails the run. If every source rule for a scope is rejected instead, the
-result's `no_comparable_rules` and run summary report **no comparable rule**
-with every rejected SID and its actual conversion reason; this does not
-fail the run. Source option names (including legacy buffer names and HTTP
-PCRE buffer flags), flow direction, accepted fields, and rejection IDs from
+client-banner alert cannot establish that scope. Every scope without an
+observed accepted rule fails the run, including a scope whose source rules
+are all rejected. In that case, the result's `no_comparable_rules` and run
+summary additionally report **no comparable rule** with every rejected SID
+and its actual conversion reason. Source option names (including legacy
+buffer names and HTTP PCRE buffer flags), flow direction, accepted fields,
+and rejection IDs from
 the same archive determine this distinction anew, without special cases
 for a scope or source version. Quoted messages and content are not syntax.
 An absent or unrecognized scope without rejected candidates still fails.
+Adding pcaps cannot fill a scope whose source rules are all rejected;
+converter support must first be addressed in a separate reviewed change.
 More corpus entries can be added
 in a normal reviewed PR, with provenance, licensing and checksum.
 
@@ -200,9 +203,11 @@ limits. A supplied empty value is distinguished from an unavailable one.
 
 Certificate RDN parsing accepts only unambiguous comma-space separated
 names. Escapes, multi-valued RDNs (`+`), duplicate components, and absent
-components stay empty. Subject organizational units have no field in the
-record and cannot be preserved. These are extraction limits, not guessed
-certificate identities.
+components stay empty. Subject organizational units and other attributes
+without a corresponding record field cannot be preserved. A joined name
+that omits any such attribute is marked incomplete even when every
+representable component is present. These are extraction limits, not
+guessed certificate identities.
 
 ### Ssh
 
@@ -246,8 +251,8 @@ An ET failure explicitly skips differential checks, records the reason
 and still retains Sigma results. A pcap download/hash/replay failure
 excludes only that pcap, records its reason, replays the rest and fails
 the run. Wrong Suricata version, extraction errors, archive/HOME_NET
-disagreement, or a coverage gap with accepted rules also fail. A scope
-whose source rules were all rejected is reported without failing, as
+disagreement, or any coverage gap also fail. A scope whose source rules
+were all rejected still fails, with the rejection reasons reported as
 described above. **Disagreement alone
 does not fail the run.**
 
