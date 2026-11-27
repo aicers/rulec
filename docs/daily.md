@@ -88,12 +88,13 @@ version does not establish server software coverage. Each scope lists
 the observed accepted SIDs and their classifications. A direction-neutral
 SSH rule only establishes server
 coverage when a Suricata alert is oriented from server to client; a
-client-banner alert cannot establish that scope. A scope with accepted
-rules but no observed Suricata alert fails the run. If all source rules
-for a scope were rejected, the result's `no_comparable_rules` and run
-summary instead report **no comparable rule** with every rejected SID
-and its actual conversion reason, without adding a missing scope or
-failing the run. Source option names (including legacy
+client-banner alert cannot establish that scope. Every scope without an
+observed accepted Suricata rule is listed in `missing_scopes` and fails
+the run, including a scope whose source candidates were all rejected.
+For an all-rejected scope, `no_comparable_rules` and the run summary also
+report **no comparable rule** with every rejected SID and its actual
+conversion reason. These diagnostics do not waive the coverage failure.
+Source option names (including legacy
 buffer names and HTTP PCRE buffer flags), flow direction, accepted fields,
 and rejection IDs from
 the same archive determine this distinction anew, without special cases
@@ -259,9 +260,10 @@ An ET failure explicitly skips differential checks, records the reason
 and still retains Sigma results. A pcap download/hash/replay failure
 excludes only that pcap, records its reason, replays the rest and fails
 the run. Wrong Suricata version, extraction errors, archive/HOME_NET
-disagreement, or a coverage gap for accepted rules also fail. A scope whose
-source rules were all rejected does not fail, with the rejection reasons
-reported as described above. The final assertion prints the saved summary
+disagreement, or any required scope without an observed accepted rule
+also fail. If a scope's source rules were all rejected, the report retains
+their rejection reasons alongside the coverage failure. The final assertion
+prints the saved summary
 to its job log before checking the exit status, so source errors, excluded
 pcaps and coverage gaps are visible in the failed step's logs as well as the run
 summary and artifacts. **Disagreement alone

@@ -451,9 +451,8 @@ pub(super) fn classify(
                     })
                     .collect(),
             );
-        } else {
-            result.missing_scopes.push(scope.clone());
         }
+        result.missing_scopes.push(scope.clone());
     }
     if !result.missing_scopes.is_empty() {
         result.errors.push(format!(
@@ -741,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn all_rejected_scopes_report_reasons_without_failing() {
+    fn all_rejected_scopes_fail_and_report_reasons() {
         // Neither scope nor SID is special: the decision uses this conversion's
         // accepted rules and rejection reasons, joined to the same source lines.
         let lines = vec![
@@ -749,11 +748,21 @@ mod tests {
             br#"alert tls any any -> any any (tls.cert_issuer; content:"test"; sid:92;)"#.to_vec(),
             br#"alert ssh any any -> any any (flow:to_server; ssh.software; content:"test"; sid:93;)"#.to_vec(),
             br#"alert tcp any any -> any any (msg:"ssh.software; sid:94;"; sid:95;)"#.to_vec(),
+            br#"alert http any any -> any any (http.uri; content:"test"; sid:96;)"#.to_vec(),
+            br#"alert http any any -> any any (http.stat_code; content:"502"; sid:97;)"#.to_vec(),
+            br#"alert dns any any -> any any (dns.query; content:"test"; sid:98;)"#.to_vec(),
         ];
         let dropped = BTreeMap::from([
             (
                 "needs_state".into(),
-                vec!["91".into(), "93".into(), "95".into()],
+                vec![
+                    "91".into(),
+                    "93".into(),
+                    "95".into(),
+                    "96".into(),
+                    "97".into(),
+                    "98".into(),
+                ],
             ),
             ("unsupported_regex".into(), vec!["92".into()]),
         ]);
@@ -765,7 +774,7 @@ mod tests {
                 reason: "needs_state".into()
             }]
         );
-        for scope in ["ssh_server_banner", "tls_certificate_response"] {
+        for scope in SCOPES {
             let mut covered = info("1");
             covered.scopes = SCOPES
                 .iter()
@@ -774,8 +783,11 @@ mod tests {
                 .collect();
             let s = BTreeMap::from([(key("1", 1), evidence())]);
             let result = classify(&[covered], &s, &s, &BTreeMap::new(), &dropped, &rejected);
-            assert!(result.errors.is_empty(), "{:?}", result.errors);
-            assert!(result.missing_scopes.is_empty());
+            assert_eq!(result.missing_scopes, vec![scope.to_string()]);
+            assert_eq!(
+                result.errors,
+                vec![format!("no compared rules in scopes: {scope}")]
+            );
             assert_eq!(result.no_comparable_rules.get(scope), rejected.get(scope));
         }
     }
