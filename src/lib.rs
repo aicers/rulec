@@ -116,7 +116,10 @@
 //! [`HEADER_BLOCK_HEADERS`] ignoring ASCII case. The name is the run of
 //! non-whitespace, non-`:` bytes immediately before the colon. For example
 //! `X-Foo: bar` and `Cookie: a` count; `User-Agent: x` and `X-Foo:` do not.
-//! These rules are retained. Other partial-condition and unmapped-field
+//! These rules are retained. [`inspect_et_open_rule`] exposes the same
+//! per-rule header diagnostic and whether a threshold is ignored;
+//! [`Rule::fields`] lists all fields a rule uses for input-availability checks.
+//! Other partial-condition and unmapped-field
 //! counters are empty for ET Open. Compilation fills model counts,
 //! always-checked counts, elapsed time and database size in the summary.
 //!
@@ -600,7 +603,10 @@ pub use derived::{
     HEADER_BLOCK_HEADERS, SshBanner, header_block, join_cert_name, join_header_names,
     split_ssh_banner,
 };
-pub use et_open::{EtOpenError, convert_et_open, read_et_open_version};
+pub use et_open::{
+    EtOpenDiagnostics, EtOpenError, EtOpenInspectionError, convert_et_open, inspect_et_open_rule,
+    read_et_open_version,
+};
 pub use event::{Event, FieldValue};
 pub use matcher::{MatchError, Matcher, RuleMatch};
 pub use normalize::{normalize_host, normalize_uri};

@@ -304,6 +304,14 @@ impl Rule {
         &self.references
     }
 
+    /// Returns every field used by the search identifiers, sorted without repeats.
+    ///
+    /// Includes field references and identifiers the condition does not select.
+    #[must_use]
+    pub fn fields(&self) -> &[String] {
+        &self.fields
+    }
+
     /// Returns the kind of raw event the rule applies to.
     #[must_use]
     pub fn kind(&self) -> RawEventKind {

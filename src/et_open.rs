@@ -230,3 +230,48 @@ fn date(value: &str) -> Option<Date> {
     }
     value.replace('_', "-").parse().ok()
 }
+
+/// Per-rule ET Open diagnostics used to explain differential results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EtOpenDiagnostics {
+    /// Whether this rule meets the documented partial-header counter definition.
+    pub header_values_partly_missing: bool,
+    /// Whether conversion ignores a threshold or detection filter in this rule.
+    pub ignores_threshold: bool,
+}
+
+/// A rejection reason encountered while inspecting one ET Open rule.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("inspecting ET Open rule: {reason}")]
+pub struct EtOpenInspectionError {
+    reason: String,
+}
+
+impl EtOpenInspectionError {
+    /// Returns the converter's rejection reason key.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+/// Inspects an ET Open rule using the converter's parser and header definition.
+///
+/// Supply the accepted rule's model and its original logical source line.
+/// This does not compile patterns, access the network, or change conversion.
+///
+/// # Errors
+///
+/// Returns the parser's rejection reason if the line cannot be converted
+/// into a rule. Pattern compilation errors are outside this inspection.
+pub fn inspect_et_open_rule(
+    line: &[u8],
+    model: crate::Model,
+) -> Result<EtOpenDiagnostics, EtOpenInspectionError> {
+    let (_, header_values_partly_missing) =
+        parse::convert(line, model).map_err(|reason| EtOpenInspectionError { reason })?;
+    Ok(EtOpenDiagnostics {
+        header_values_partly_missing,
+        ignores_threshold: parse::has_threshold(line),
+    })
+}

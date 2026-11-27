@@ -1,0 +1,21 @@
+%YAML 1.1
+---
+# Only overrides from the packaged Suricata 7.0.3 default configuration.
+# HOME_NET is set on the command line to preserve sibling default variables.
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert
+        - http:
+            extended: yes
+        - dns:
+            version: 2
+            requests: yes
+            responses: yes
+        - tls:
+            extended: yes
+        - ssh
+        - flow

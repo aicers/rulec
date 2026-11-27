@@ -1,2 +1,6 @@
 /target
 Cargo.lock
+
+/daily-work/
+/daily-results/
+**/__pycache__/

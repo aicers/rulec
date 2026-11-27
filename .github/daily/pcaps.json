@@ -1,0 +1,26 @@
+[
+  {
+    "name": "protocol-probes",
+    "url": "https://raw.githubusercontent.com/{repository}/{revision}/.github/daily/pcaps/protocol-probes.pcap",
+    "sha256": "a83523056a568e6de11667b0bd6111858408a48561ac59ebcb1f12abca7d438c",
+    "source": "rulec public synthetic protocol corpus; .github/daily/make_probes.py",
+    "license": "Apache-2.0; retain LICENSE and copyright notice when redistributing",
+    "coverage": [
+      "Http request to_server",
+      "Http response to_client (502 and response body)",
+      "Ssh server banner to_client",
+      "Dns query to_server"
+    ],
+    "bundled_path": ".github/daily/pcaps/protocol-probes.pcap"
+  },
+  {
+    "name": "tls-glupteba",
+    "url": "https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/tests/tls/tls-glupteba/input.pcap",
+    "sha256": "458f60c29bdfaf07756cc38c1d58f0e5a529aa330f4d7a6a899ac0fb0137f9b2",
+    "source": "https://github.com/OISF/suricata-verify/tree/923478ed7df163c6b126a07e841bc38ecba045d8/tests/tls/tls-glupteba",
+    "license": "MIT; retain copyright and permission notice: https://raw.githubusercontent.com/OISF/suricata-verify/923478ed7df163c6b126a07e841bc38ecba045d8/LICENSE.txt",
+    "coverage": [
+      "Tls certificate response to_client (subject and issuer)"
+    ]
+  }
+]

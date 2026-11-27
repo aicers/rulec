@@ -749,3 +749,11 @@ pub(super) fn convert(bytes: &[u8], model: Model) -> Result<(Rule, bool), String
     });
     Ok((rule, partial_header))
 }
+
+pub(super) fn has_threshold(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    rule_options(&text)
+        .0
+        .iter()
+        .any(|(key, _)| matches!(*key, "threshold" | "detection_filter"))
+}
