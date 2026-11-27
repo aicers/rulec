@@ -45,6 +45,8 @@ jobs:
       - name: Build offline tool
         run: cargo build --release --example daily
       - name: Download all three sources independently
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 .github/daily/run.py download
       - name: Convert and audit all sources independently
         run: target/release/examples/daily convert daily-work daily-results

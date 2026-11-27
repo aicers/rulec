@@ -39,11 +39,21 @@ def failure_reason(error):
     return f"{type(error).__name__}: {error}"
 
 
+class PublicDownloadRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        redirected = super().redirect_request(request, response, code, message, headers, new_url)
+        if redirected is not None and urllib.parse.urlsplit(new_url)[:2] != urllib.parse.urlsplit(request.full_url)[:2]:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
 def fetch(url, token=None):
-    headers = {"User-Agent": "rulec-daily", "Accept": "application/vnd.github+json"} if "api.github.com" in url else {"User-Agent": "rulec-daily"}
-    if token:
+    github_api = urllib.parse.urlsplit(url)[:2] == ("https", "api.github.com")
+    headers = {"User-Agent": "rulec-daily", "Accept": "application/vnd.github+json"} if github_api else {"User-Agent": "rulec-daily"}
+    if token and github_api:
         headers["Authorization"] = "Bearer " + token
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
+    opener = urllib.request.build_opener(PublicDownloadRedirect())
+    with opener.open(urllib.request.Request(url, headers=headers), timeout=120) as response:
         return response.read()
 
 
@@ -318,7 +328,8 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("daily-results"))
     args = parser.parse_args()
     if args.command == "download":
-        download_sources(args.work)
+        token = os.environ.get("GH_TOKEN")
+        download_sources(args.work, lambda url: fetch(url, token))
     elif args.command == "suricata":
         try:
             run_suricata(args.work, args.output)

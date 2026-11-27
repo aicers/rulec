@@ -11,6 +11,10 @@ The workflow downloads ET Open's Suricata 7.0.3 archive and adjacent
 changing that directory. Archives remain in the runner's working directory.
 The Rust example consumes local files; the library and Rust tests never
 make network requests. Only development dependencies support the example.
+GitHub API metadata requests use the job's read-only token to avoid the
+shared runner's anonymous API limit. Downloads on other hosts receive no
+token, and redirects to another host or scheme strip authentication headers.
+Local source downloads optionally use `GH_TOKEN` for the same purpose.
 
 ## Conversion audit and history
 

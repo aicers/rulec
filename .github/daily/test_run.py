@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import make_probes
 import urllib.error
 import unittest
+from unittest import mock
 import zipfile
 
 import run
@@ -38,6 +39,27 @@ def report(source, error=None):
 
 
 class DailyTests(unittest.TestCase):
+    def test_download_authentication_is_scoped_to_github_api(self):
+        for url, authenticated in [
+            ("https://api.github.com/repos/SigmaHQ/sigma/releases/latest", True),
+            ("https://github.com/SigmaHQ/sigma/archive/test.zip", False),
+            ("https://rules.emergingthreats.net/open/version.txt", False),
+            ("https://api.github.com.example.test/data", False),
+            ("http://api.github.com/example", False),
+        ]:
+            with self.subTest(url=url), mock.patch.object(run.urllib.request, "build_opener") as build:
+                build.return_value.open.return_value = io.BytesIO(b"download")
+                self.assertEqual(run.fetch(url, "test-token"), b"download")
+                request = build.return_value.open.call_args.args[0]
+                self.assertEqual(request.get_header("Authorization"), "Bearer test-token" if authenticated else None)
+
+    def test_download_redirect_does_not_forward_token_to_storage(self):
+        request = run.urllib.request.Request("https://api.github.com/example", headers={"Authorization": "Bearer test-token"})
+        redirect = run.PublicDownloadRedirect()
+        for target, authenticated in [("https://api.github.com/next", True), ("https://storage.example.test/signed", False), ("http://api.github.com/next", False)]:
+            redirected = redirect.redirect_request(request, None, 302, "Found", {}, target)
+            self.assertEqual(redirected.get_header("Authorization"), "Bearer test-token" if authenticated else None)
+
     def test_sources_fail_independently(self):
         calls = []
         def fetch(url):
