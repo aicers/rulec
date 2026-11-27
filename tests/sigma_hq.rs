@@ -990,3 +990,110 @@ fn version_inspection_does_not_parse_malformed_rules() {
         &["a.yml"]
     );
 }
+
+#[test]
+fn blocklist_matches_only_source_ids_not_fallback_paths() {
+    let missing = "title: missing id\n";
+    let invalid = "id: [not, a, string]\ntitle: invalid id\n";
+    let blocked = "id: blocked\n";
+    let bytes = release(&[
+        ("rules/missing.yml", missing),
+        ("rules/invalid.yml", invalid),
+        ("rules/blocked.yml", blocked),
+    ]);
+    let blocklist =
+        Blocklist::parse("sigma_hq missing.yml\nsigma_hq invalid.yml\nsigma_hq blocked\n").unwrap();
+    let conversion = convert_sigma_hq(&bytes, None, &blocklist).unwrap();
+    assert_accepted(&conversion, 0);
+    assert_eq!(
+        conversion.summary.dropped.get(reason::BLOCKLIST).unwrap(),
+        &["blocked"]
+    );
+    assert_eq!(
+        conversion
+            .summary
+            .dropped
+            .get(reason::MISSING_ATTRIBUTE)
+            .unwrap(),
+        &["missing.yml"]
+    );
+    assert_eq!(
+        conversion
+            .summary
+            .dropped
+            .get(reason::FORMAT_ERROR)
+            .unwrap(),
+        &["invalid.yml"]
+    );
+}
+
+#[test]
+fn added_conditions_rename_operator_names_used_as_pattern_targets() {
+    for name in ["and", "or", "not", "of", "all", "1"] {
+        for quantifier in ["1", "all"] {
+            let rule = source_rule(
+                "guarded",
+                "{product: windows, service: security}",
+                &format!(
+                    "  {name}: {{CommandLine: needle}}\n  condition: {quantifier} of {name} or {quantifier} of {name}\n"
+                ),
+            );
+            let converted = convert_one(&rule);
+            assert_accepted(&converted, 1);
+            let compiled = compile(converted.rules).unwrap();
+            for channel in ["Security", "System"] {
+                for command in ["needle", "other"] {
+                    let event = TestEvent::new(RawEventKind::WindowsEventLog)
+                        .os(OsFamily::Windows)
+                        .text("channel", &[channel])
+                        .text("event_data.CommandLine", &[command]);
+                    assert_eq!(
+                        !matched_ids(&compiled, &event, &[]).is_empty(),
+                        channel == "Security" && command == "needle",
+                        "{quantifier} of {name}, {channel}, {command}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn excluded_members_do_not_need_a_supported_compression_method() {
+    let rule = simple("r", "{category: proxy}", "{c-uri: /x}", "selection");
+    for emerging in [false, true] {
+        let path = if emerging {
+            "rules-emerging-threats/a.yml"
+        } else {
+            "rules/a.yml"
+        };
+        let mut bytes = archive(
+            &[
+                ("outside.bin", b"not decoded"),
+                (path, rule.as_bytes()),
+                ("version.txt", VERSION_TEXT.as_bytes()),
+            ],
+            SHA,
+            &[Some(MTIME); 3],
+        );
+        // Only the excluded first member uses BZip2, a disabled codec.
+        // Its payload is deliberately opaque to both inspection APIs.
+        for (signature, method_offset) in [(b"PK\x03\x04", 8), (b"PK\x01\x02", 10)] {
+            let header = bytes.windows(4).position(|s| s == signature).unwrap();
+            bytes[header + method_offset..header + method_offset + 2]
+                .copy_from_slice(&12_u16.to_le_bytes());
+        }
+        let conversion = if emerging {
+            convert_sigma_hq_emerging(&bytes, &Blocklist::default()).unwrap()
+        } else {
+            convert_sigma_hq(&bytes, None, &Blocklist::default()).unwrap()
+        };
+        assert_accepted(&conversion, 1);
+        let version = if emerging {
+            read_sigma_hq_emerging_version(&bytes).unwrap()
+        } else {
+            read_sigma_hq_version(&bytes, None).unwrap()
+        };
+        assert_eq!(version, conversion.summary.source_version);
+    }
+}

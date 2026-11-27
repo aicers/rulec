@@ -132,7 +132,8 @@ fn unpack(
     let mut files = Vec::new();
     let mut version_text = None;
     for index in 0..zip.len() {
-        let mut file = zip.by_index(index).map_err(bad_zip)?;
+        // Excluded members need no decoder, even if their codec is disabled.
+        let file = zip.by_index_raw(index).map_err(bad_zip)?;
         if source == Source::SigmaHqEmerging {
             match utc_mtime(file.extra_data().unwrap_or_default()) {
                 Some(seconds) => {
@@ -168,6 +169,8 @@ fn unpack(
         if relative.is_none() && !is_version {
             continue;
         }
+        drop(file);
+        let mut file = zip.by_index(index).map_err(bad_zip)?;
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)
             .map_err(|e| bad_zip(format!("reading {}: {e}", file.name())))?;
@@ -280,11 +283,9 @@ fn convert(
         ) {
             continue;
         }
-        let id = get(&node, "id")
-            .and_then(text)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&path);
-        if blocklist.contains(source, id) {
+        let source_id = get(&node, "id").and_then(text).filter(|s| !s.is_empty());
+        let id = source_id.unwrap_or(&path);
+        if source_id.is_some_and(|id| blocklist.contains(source, id)) {
             summary.record_dropped(reason::BLOCKLIST, id);
             continue;
         }
@@ -609,16 +610,31 @@ fn guarded_condition(original: &str) -> String {
         tokens.push(word);
     }
     let mut out = String::from("(");
+    let mut pattern_target = false;
     for (index, token) in tokens.iter().enumerate() {
+        if token.chars().all(char::is_whitespace) {
+            out.push_str(token);
+            continue;
+        }
+        // After `of`, even an operator's spelling is an identifier
+        // pattern. Consume it before looking for the next operator.
+        if pattern_target {
+            out.push_str("s_");
+            out.push_str(if *token == "them" { "*" } else { token });
+            pattern_target = false;
+            continue;
+        }
         let next = tokens
             .iter()
             .skip(index + 1)
             .find(|t| !t.chars().all(char::is_whitespace));
         match *token {
-            "and" | "or" | "not" | "of" | "(" | ")" => out.push_str(token),
+            "of" => {
+                out.push_str(token);
+                pattern_target = true;
+            }
+            "and" | "or" | "not" | "(" | ")" => out.push_str(token),
             "1" | "all" if next == Some(&"of") => out.push_str(token),
-            "them" => out.push_str("s_*"),
-            token if token.chars().all(char::is_whitespace) => out.push_str(token),
             _ => {
                 out.push_str("s_");
                 out.push_str(token);
