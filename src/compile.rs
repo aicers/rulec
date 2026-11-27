@@ -179,6 +179,7 @@ pub(crate) enum CTest {
 /// An expression with its patterns resolved to database entries.
 #[derive(Debug)]
 pub(crate) enum CExpr {
+    Never,
     And(Vec<CExpr>),
     Or(Vec<CExpr>),
     Not(Box<CExpr>),
@@ -484,6 +485,7 @@ struct ExprCompiler<'b> {
 impl ExprCompiler<'_> {
     fn expr(&mut self, expr: &Expr) -> Result<CExpr, CompileError> {
         Ok(match expr {
+            Expr::Never => CExpr::Never,
             Expr::And(items) => CExpr::And(self.exprs(items)?),
             Expr::Or(items) => CExpr::Or(self.exprs(items)?),
             Expr::Not(item) => CExpr::Not(Box::new(self.expr(item)?)),
@@ -600,6 +602,7 @@ enum Tri {
 /// event no pattern matched, so it is checked for every event.
 fn always_check(expr: &CExpr) -> Tri {
     match expr {
+        CExpr::Never => Tri::False,
         CExpr::And(items) => {
             let mut result = Tri::True;
             for item in items {

@@ -19,8 +19,9 @@
 //! the normalization functions converters apply to patterns and the records
 //! to values ([`normalize_uri`], [`normalize_host`], [`decode_body`],
 //! [`join_cert_name`], [`join_header_names`], [`header_block`],
-//! [`split_ssh_banner`]). ET Open bundles can be converted with
-//! [`convert_et_open`]; the SigmaHQ converter is not here yet.
+//! [`split_ssh_banner`]). It converts ET Open bundles ([`convert_et_open`])
+//! and SigmaHQ releases and emerging threats ([`convert_sigma_hq`],
+//! [`convert_sigma_hq_emerging`]).
 //!
 //! # ET Open conversion
 //!
@@ -118,6 +119,122 @@
 //! These rules are retained. Other partial-condition and unmapped-field
 //! counters are empty for ET Open. Compilation fills model counts,
 //! always-checked counts, elapsed time and database size in the summary.
+//!
+//! # SigmaHQ conversion
+//!
+//! [`convert_sigma_hq`] takes the bytes of a release's `sigma_all_rules.zip`,
+//! an optional GitHub release `tag_name`, and a [`Blocklist`].
+//! [`convert_sigma_hq_emerging`] takes an unmodified GitHub source zip
+//! (`archive/<SHA>.zip` or master zip) and a blocklist. Neither accesses the
+//! network. [`Conversion`] contains the accepted rules and a serializable
+//! [`ConversionSummary`], whose `source_version` is the source's version,
+//! display release name, UTC date order key and [`content_digest`].
+//! [`read_sigma_hq_version`] and [`read_sigma_hq_emerging_version`] inspect
+//! that same version and digest without parsing rules or compiling patterns;
+//! they return the same archive errors as conversion, in the order invalid
+//! zip, no selected files, missing version/commit information. Selected files
+//! and release `version.txt` are limited to 8 MiB each and 256 MiB combined
+//! after decompression; exceeding either limit returns [`SigmaHqError::NotAZip`]
+//! from both APIs. Out-of-scope entries are never decompressed.
+//!
+//! Release conversion selects only `rules/**/*.yml` and `rules/**/*.yaml`,
+//! excluding any `deprecated` directory below `rules/`. Emerging conversion
+//! selects only `rules-emerging-threats/**/*.yml` and `**/*.yaml`. Both accept
+//! the directory at the zip root or inside a sole top-level directory.
+//! `status: deprecated` and `status: unsupported` rules are skipped without
+//! being counted as dropped. All selected files, including those skipped
+//! for status, contribute to the digest under their path relative to the
+//! selected directory. Each file must be UTF-8 and contain one YAML document.
+//!
+//! Releases require sibling `version.txt` lines `Label:` and `Release Date:`
+//! (the latter a valid `YYYY-MM-DD`). The version is `<Label> (<date>)`;
+//! `Commit-Hash:` is ignored. Emerging archives require a zip comment of
+//! exactly 40 hexadecimal SHA characters and one identical extended UTC
+//! mtime (`0x5455`) on every entry. Their version is `master@<7 chars>
+//! (<UTC date>)`; no timezone-less DOS timestamp fallback is guessed.
+//! Both order keys have no number. Only releases carry the caller's optional
+//! release name. Use [`Blocklist::builtin`] for the built-in exclusions.
+//!
+//! ## Mapping and added conditions
+//!
+//! `data/sigma_hq_mapping.yaml`, embedded with `include_str!`, is the complete
+//! mapping data. Each list entry has `logsource`, `kind`, optional `os`,
+//! `fields` (explicit source-to-target names), `unmapped` (names that must
+//! not map), `other` (`none`, `snake_case_column`, or `{prefix: ...}`),
+//! optional `add` (an AND map; list values are OR), and optional `keywords`
+//! (the destination of keyword lists, with `contains`). `unmapped` wins over
+//! `fields`, then `other` applies. `snake_case_column` inserts `_` before an
+//! uppercase character following a lowercase character or digit, lowercases
+//! the result and accepts only fixed catalog columns, excluding normalized
+//! aliases of `unmapped` names too. The table excludes agent metadata and
+//! `logon_id_full`. `product`, `category`, and `service` match
+//! exactly, including absence; other logsource keys are ignored. Adding a
+//! mapping needs no converter code change. The data's header documents the
+//! same schema, and tests validate target fields and added conditions.
+//!
+//! The converter maps field names and `fieldref` targets, preserving values,
+//! modifiers and conditions. Unmapped field conditions retain their original
+//! key and become `!never ''`; unknown modifier names are checked before this
+//! replacement. Journald alone maps keyword lists to
+//! `fields.MESSAGE|contains: [values]`. The output `logsource` contains only
+//! `category: <kind>`. Network mappings use raw `uri` and `host`, without
+//! normalization. Host records are cataloged but do not implement [`Event`]
+//! yet; callers can supply their own implementation following the value
+//! forms below.
+//!
+//! An `add` condition is named `rulec_logsource`. All original identifiers
+//! are renamed with `s_`; condition names and patterns receive the same
+//! prefix (`1 of sel*` becomes `1 of s_sel*`). `1 of them` and `all of them`
+//! expand to a parenthesized OR or AND of the renamed identifiers whose
+//! original names did not start with `_`, in document order. For example,
+//! `all of them` with identifiers `a`, `_aux`, `b` becomes `(s_a and s_b)`;
+//! explicit references and patterns can still select `s__aux`. The
+//! condition becomes `(<renamed original>) and rulec_logsource`, for each
+//! member of a condition list. Thus the added condition cannot be selected
+//! by the original `them` or name patterns. Mappings without `add` keep
+//! original identifier names and conditions.
+//!
+//! Attributes retain `title`, `author`, `references`, and `level` as
+//! `severity`. Rules have the selected SigmaHQ source, the Sigma `id` as
+//! `source_rule_id`, model `SigmaSignature`, and license `DRL-1.1`.
+//! `attack.tNNNN[.NNN]` tags become technique IDs; all 14 Enterprise tactic
+//! names, with hyphens or underscores, map to their `TA` IDs without repeats.
+//! Other tags are ignored. OS comes from the mapping. Revision and
+//! classification are absent. The informational `prefilter` is the longest
+//! literal byte fragment between unescaped `*` and `?` in converted string
+//! condition values, with Sigma escapes decoded and the first fragment
+//! winning ties; regex, numeric, CIDR, fieldref, never and added conditions
+//! are excluded. It is absent if no nonempty fragment exists.
+//!
+//! ## Dropped rules and partial conditions
+//!
+//! Each dropped rule has exactly one reason, in this priority order:
+//!
+//! 1. `blocklist` (only when an id can be read).
+//! 2. `format_error` or `missing_attribute` (missing Sigma `id` or `title`).
+//! 3. `correlation_rule`.
+//! 4. `no_input_kind_macos`, then `no_input_kind` for other unmapped logsources.
+//! 5. `unsupported_modifier:<name>` (one colon, no spaces; the first name
+//!    in source order).
+//! 6. `placeholder_value_missing` (only `%home_net%` has a value).
+//! 7. `keywords_without_field`.
+//! 8. `unsupported_regex` (vectorscan rejected a rule's pattern).
+//!
+//! The corresponding constants live in [`reason`]; `UNSUPPORTED_MODIFIER`
+//! is the prefix, and [`ReadError::reason`] alone does not append the name.
+//! Dropped lists use the Sigma id where readable, otherwise the file path
+//! relative to the selected directory, for example
+//! `windows/process_creation/proc_creation_win_x.yml`. Compilation fills the
+//! accepted count, regex exclusions, always-check counts, time and DB size;
+//! returned rules exclude every compile failure and pass the catalog check.
+//! Whole-database compilation failure is an error, not a per-rule exclusion.
+//!
+//! `partly_never_true` counts rules with a never condition in identifiers
+//! actually used by `condition`; `partly_never_true_under_not` counts those
+//! with one under an odd number of `not`s. If an identifier appears with
+//! both parities it contributes to the latter. `unmapped_fields` counts
+//! rules per original source field, once per rule, including fields in
+//! unused identifiers. `header_values_partly_missing` is zero.
 //!
 //! # Clumit Sigma
 //!
@@ -260,6 +377,24 @@
 //! A plain Sigma string never carries a tag, so the two cannot be confused.
 //! Without the tag, a backslash keeps its Sigma meaning.
 //!
+//! ## Never
+//!
+//! The local tag `!never` marks an impossible field condition:
+//!
+//! ```yaml
+//! OriginalField|any_modifier: !never ''
+//! ```
+//!
+//! Only an empty string directly in a field map's value position is valid,
+//! including maps in a search identifier's OR list. A nonempty tagged value,
+//! a tagged list element, or a tagged search identifier itself is malformed.
+//! The original key is opaque: neither its field name nor its modifiers are
+//! parsed or cataloged. It contributes no vectorscan pattern, no field to
+//! [`unknown_fields`], and no witness in [`RuleMatch::fields`]. Its value is
+//! constant false, so `not` makes it true. Three-valued always-check analysis
+//! also knows it is false: `!never` AND a CIDR condition is never an
+//! always-checked rule.
+//!
 //! ## `%home_net%`
 //!
 //! `expand` accepts one placeholder, `%home_net%`, standing for the ranges
@@ -391,6 +526,39 @@
 //! (1 MiB), and unpacking stops there. Its documentation has the rules in
 //! full.
 //!
+//! # Host field catalog and value forms
+//!
+//! [`catalog_fields`] also covers every Sysmon kind from
+//! `giganto-client::ingest::sysmon` (the exact struct columns except
+//! `endpoint`, including `logon_id_full`), `endpoint_windows_event_log`,
+//! `endpoint_journald`, and `endpoint_auditd`. Other raw kinds remain
+//! uncataloged. These are catalog contracts; host record [`Event`]
+//! implementations are outside this version.
+//!
+//! Windows event log fixed columns are `channel`, `provider`, `event_id`,
+//! `version`, `level`, `task`, `opcode`, `keywords`, `record_id`, `computer`,
+//! `user_sid`, `user_data_xml`; auditd fixed columns are `serial` and
+//! `record_type`; journald has no fixed columns. [`catalog_field_prefixes`]
+//! returns `["event_data."]` for Windows event logs, `["fields."]` for
+//! journald and auditd, and an empty slice for other kinds. Prefixes require
+//! a nonempty, case-preserved suffix: `event_data.CommandLine`,
+//! `fields.MESSAGE`, and `fields.a0` are known, while `event_data.` and
+//! `fields.` are not. [`field_status`] and [`unknown_fields`] check both
+//! fixed and dynamic names; [`catalog_fields`] returns fixed columns only.
+//!
+//! Fixed columns use the network [value forms](#value-forms): strings give
+//! one UTF-8 [`FieldValue::Bytes`] (including one zero-length value for an
+//! empty string), integers one [`FieldValue::Int`] (a `u64` beyond `i64`
+//! gives decimal bytes), booleans `true`/`false` bytes, and addresses one
+//! [`FieldValue::Addr`]. Vectors give one such value per element in stored
+//! order; an empty vector or `Option::None` gives no values.
+//!
+//! `event_data.X` gives each `EventData` value whose name is exactly `X`, in
+//! stored order; unnamed `EventData` contributes to no field. `fields.x`
+//! gives each `LogField` with the exact name `x`, text as UTF-8 bytes and
+//! `Bytes` unchanged; auditd uses record order and stored order within each
+//! record. `record_type` gives one value per auditd record, in record order.
+//!
 //! [sigma]: https://github.com/SigmaHQ/sigma-specification/tree/v2.1.0
 
 mod attrs;
@@ -412,6 +580,8 @@ mod network;
 mod normalize;
 pub mod reason;
 mod rule;
+mod sigma_hq;
+mod sigma_hq_mapping;
 mod summary;
 mod wildcard;
 mod yaml;
@@ -419,7 +589,10 @@ mod yaml;
 pub use attrs::{Model, Os, Source, UnknownName};
 pub use body::{MAX_DECODED_BODY_LEN, decode_body};
 pub use bundle::{BundleError, RuleBundle};
-pub use catalog::{FieldStatus, KindNotCataloged, catalog_fields, field_status, unknown_fields};
+pub use catalog::{
+    FieldStatus, KindNotCataloged, catalog_field_prefixes, catalog_fields, field_status,
+    unknown_fields,
+};
 pub use cidr::{Cidr, CidrParseError};
 pub use compile::{CompileError, CompileStats, CompiledRules, ExcludedRule, KindCount, compile};
 pub use convert::Conversion;
@@ -432,6 +605,10 @@ pub use event::{Event, FieldValue};
 pub use matcher::{MatchError, Matcher, RuleMatch};
 pub use normalize::{normalize_host, normalize_uri};
 pub use rule::{ReadError, Rule, read_rules};
+pub use sigma_hq::{
+    SigmaHqError, convert_sigma_hq, convert_sigma_hq_emerging, read_sigma_hq_emerging_version,
+    read_sigma_hq_version,
+};
 pub use summary::{
     Blocklist, BlocklistError, ConversionSummary, OrderKey, SourceVersion, content_digest,
 };

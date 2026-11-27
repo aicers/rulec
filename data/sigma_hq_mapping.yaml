@@ -1,0 +1,437 @@
+# Exact logsource triples: absent product/category/service must also be absent
+# in the source rule; other logsource keys are ignored. Each list entry has:
+# logsource: the SigmaHQ keys; kind: the destination RawEventKind name;
+# os: optional OS; fields: explicit source-to-target names; unmapped: names
+# that must never map; other: none, snake_case_column (catalog columns only),
+# or {prefix: ...}. Explicit unmapped wins, then fields, then other.
+# snake_case_column also excludes normalized aliases of unmapped names.
+# add: an optional AND map of target field conditions (lists are OR values).
+# keywords: an optional target field for keyword lists, with contains.
+# YAML aliases share data only; adding an entry requires no converter changes.
+
+- logsource: {"category": "proxy"}
+  kind: "http"
+  fields: {"c-uri": "uri", "cs-uri": "uri", "cs-host": "host", "c-useragent": "user_agent", "cs-user-agent": "user_agent", "cs-method": "method", "cs-referrer": "referer", "cs-referer": "referer", "cs-cookie": "cookie", "sc-status": "status_code", "src_ip": "orig_addr", "c-ip": "orig_addr", "dst_ip": "resp_addr", "s-ip": "resp_addr", "src_port": "orig_port", "dst_port": "resp_port", "s-port": "resp_port"}
+  other: "none"
+
+- logsource: {"category": "webserver"}
+  kind: "http"
+  fields: {"c-uri": "uri", "cs-uri": "uri", "cs-host": "host", "c-useragent": "user_agent", "cs-user-agent": "user_agent", "cs-method": "method", "cs-referrer": "referer", "cs-referer": "referer", "cs-cookie": "cookie", "sc-status": "status_code", "src_ip": "orig_addr", "c-ip": "orig_addr", "dst_ip": "resp_addr", "s-ip": "resp_addr", "src_port": "orig_port", "dst_port": "resp_port", "s-port": "resp_port"}
+  other: "none"
+
+- logsource: {"product": "zeek", "service": "http"}
+  kind: "http"
+  fields: {"method": "method", "host": "host", "uri": "uri", "user_agent": "user_agent", "status_code": "status_code", "status_msg": "status_msg", "username": "username", "password": "password", "referrer": "referer", "id.orig_h": "orig_addr", "id.resp_h": "resp_addr", "id.orig_p": "orig_port", "id.resp_p": "resp_port"}
+  other: "none"
+
+- logsource: {"category": "dns"}
+  kind: "dns"
+  fields: {"query": "query", "answer": "answer", "src_ip": "orig_addr", "c-ip": "orig_addr", "dst_ip": "resp_addr", "s-ip": "resp_addr", "src_port": "orig_port", "dst_port": "resp_port", "s-port": "resp_port"}
+  other: "none"
+
+- logsource: {"product": "zeek", "service": "dns"}
+  kind: "dns"
+  fields: {"query": "query", "qtype": "qtype", "qclass": "qclass", "rcode": "rcode", "trans_id": "trans_id", "answers": "answer", "id.orig_h": "orig_addr", "id.resp_h": "resp_addr", "id.orig_p": "orig_port", "id.resp_p": "resp_port"}
+  other: "none"
+
+- logsource: {"product": "zeek", "service": "ssl"}
+  kind: "tls"
+  fields: {"server_name": "server_name", "id.orig_h": "orig_addr", "id.resp_h": "resp_addr", "id.orig_p": "orig_port", "id.resp_p": "resp_port"}
+  other: "none"
+
+- logsource: {"category": "firewall"}
+  kind: "conn"
+  fields: {"src_ip": "orig_addr", "c-ip": "orig_addr", "dst_ip": "resp_addr", "s-ip": "resp_addr", "src_port": "orig_port", "dst_port": "resp_port", "s-port": "resp_port"}
+  other: "none"
+
+- logsource: {"product": "zeek", "service": "conn"}
+  kind: "conn"
+  fields: {"service": "service", "conn_state": "conn_state", "orig_bytes": "orig_bytes", "resp_bytes": "resp_bytes", "orig_pkts": "orig_pkts", "resp_pkts": "resp_pkts", "id.orig_h": "orig_addr", "id.resp_h": "resp_addr", "id.orig_p": "orig_port", "id.resp_p": "resp_port"}
+  other: "none"
+
+- logsource: {"product": "windows", "category": "process_creation"}
+  kind: "process_create"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "file_change"}
+  kind: "file_create_time"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "network_connection"}
+  kind: "network_connect"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "process_termination"}
+  kind: "process_terminate"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "driver_load"}
+  kind: "driver_load"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "image_load"}
+  kind: "image_load"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "create_remote_thread"}
+  kind: "create_remote_thread"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "raw_access_thread"}
+  kind: "raw_access_read"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "process_access"}
+  kind: "process_access"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "file_event"}
+  kind: "file_create"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "registry_add"}
+  kind: "registry_object_add_del"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+  add: {"event_type": "CreateKey"}
+
+- logsource: {"product": "windows", "category": "registry_delete"}
+  kind: "registry_object_add_del"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+  add: {"event_type": ["DeleteKey", "DeleteValue"]}
+
+- logsource: {"product": "windows", "category": "registry_set"}
+  kind: "registry_value_set"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "registry_rename"}
+  kind: "registry_key_rename"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "create_stream_hash"}
+  kind: "file_create_stream_hash"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "pipe_created"}
+  kind: "pipe_event"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "dns_query"}
+  kind: "dns_query"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "file_delete"}
+  kind: "file_delete"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "file_delete_detected"}
+  kind: "file_delete_detected"
+  os: "windows"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "category": "process_tampering"}
+  kind: "process_tamper"
+  os: "windows"
+  fields: {"Type": "tamper_type"}
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "linux", "category": "process_creation"}
+  kind: "process_create"
+  os: "linux"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "linux", "category": "network_connection"}
+  kind: "network_connect"
+  os: "linux"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "linux", "category": "process_termination"}
+  kind: "process_terminate"
+  os: "linux"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "linux", "category": "raw_access_thread"}
+  kind: "raw_access_read"
+  os: "linux"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "linux", "category": "file_event"}
+  kind: "file_create"
+  os: "linux"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "linux", "category": "file_delete"}
+  kind: "file_delete"
+  os: "linux"
+  unmapped: ["LogonId", "GrantedAccess", "CreationUtcTime", "PreviousCreationUtcTime", "AgentName", "AgentId", "LogonIdFull"]
+  other: "snake_case_column"
+
+- logsource: {"product": "windows", "service": "security"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Security"}
+
+- logsource: {"product": "windows", "service": "system"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "System"}
+
+- logsource: {"product": "windows", "service": "application"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Application"}
+
+- logsource: {"product": "windows", "service": "powershell"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-PowerShell/Operational"}
+
+- logsource: {"product": "windows", "service": "powershell-classic"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Windows PowerShell"}
+
+- logsource: {"product": "windows", "service": "windefend"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-Windows Defender/Operational"}
+
+- logsource: {"product": "windows", "service": "taskscheduler"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-TaskScheduler/Operational"}
+
+- logsource: {"product": "windows", "service": "wmi"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-WMI-Activity/Operational"}
+
+- logsource: {"product": "windows", "service": "dns-server"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "DNS Server"}
+
+- logsource: {"product": "windows", "service": "driver-framework"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-DriverFrameworks-UserMode/Operational"}
+
+- logsource: {"product": "windows", "service": "bits-client"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-Bits-Client/Operational"}
+
+- logsource: {"product": "windows", "service": "codeintegrity-operational"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-CodeIntegrity/Operational"}
+
+- logsource: {"product": "windows", "service": "firewall-as"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"}
+
+- logsource: {"product": "windows", "service": "ntlm"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-NTLM/Operational"}
+
+- logsource: {"product": "windows", "service": "terminalservices-localsessionmanager"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational"}
+
+- logsource: {"product": "windows", "service": "sysmon"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Microsoft-Windows-Sysmon/Operational"}
+
+- logsource: {"product": "windows", "category": "ps_module"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": ["Microsoft-Windows-PowerShell/Operational", "PowerShellCore/Operational"], "event_id": 4103}
+
+- logsource: {"product": "windows", "category": "ps_script"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords"]
+  other: {"prefix": "event_data."}
+  add: {"channel": ["Microsoft-Windows-PowerShell/Operational", "PowerShellCore/Operational"], "event_id": 4104}
+
+- logsource: {"product": "windows", "category": "ps_classic_start"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords", "Data"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Windows PowerShell", "event_id": 400}
+
+- logsource: {"product": "windows", "category": "ps_classic_provider_start"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords", "Data"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Windows PowerShell", "event_id": 600}
+
+- logsource: {"product": "windows", "category": "ps_classic_script"}
+  kind: "endpoint_windows_event_log"
+  os: "windows"
+  fields: {"EventID": "event_id", "Channel": "channel", "Provider_Name": "provider", "Computer": "computer", "Level": "level", "Task": "task", "Opcode": "opcode", "Version": "version", "EventRecordID": "record_id"}
+  unmapped: ["Keywords", "Data"]
+  other: {"prefix": "event_data."}
+  add: {"channel": "Windows PowerShell", "event_id": 800}
+
+- logsource: {"product": "linux"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "syslog"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "auth"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  add: {"fields.SYSLOG_FACILITY": ["4", "10"]}
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "cron"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  add: {"fields.SYSLOG_FACILITY": "9"}
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "sshd"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  add: {"fields.SYSLOG_IDENTIFIER": "sshd"}
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "sudo"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  add: {"fields.SYSLOG_IDENTIFIER": "sudo"}
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "vsftpd"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  add: {"fields.SYSLOG_IDENTIFIER": "vsftpd"}
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "clamav"}
+  kind: "endpoint_journald"
+  os: "linux"
+  other: "none"
+  add: {"fields.SYSLOG_IDENTIFIER": ["clamd", "freshclam"]}
+  keywords: "fields.MESSAGE"
+
+- logsource: {"product": "linux", "service": "auditd"}
+  kind: "endpoint_auditd"
+  os: "linux"
+  fields: {"type": "record_type"}
+  other: {"prefix": "fields."}

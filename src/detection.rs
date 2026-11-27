@@ -284,7 +284,10 @@ enum Kind {
 }
 
 /// Reads one `field|modifiers: value` entry.
-fn field_condition(key: &str, value: &Node) -> Result<Expr, ReadError> {
+pub(crate) fn field_condition(key: &str, value: &Node) -> Result<Expr, ReadError> {
+    if matches!(value, Node::Never) {
+        return Ok(Expr::Never);
+    }
     let mut parts = key.split('|');
     let field = parts.next().unwrap_or_default();
     if field.is_empty() {
@@ -316,7 +319,7 @@ fn field_condition(key: &str, value: &Node) -> Result<Expr, ReadError> {
         other => vec![other],
     };
     for v in &values {
-        if matches!(v, Node::Seq(_) | Node::Map(_)) {
+        if matches!(v, Node::Never | Node::Seq(_) | Node::Map(_)) {
             return Err(format_err(format!(
                 "`{key}` lists {}, not a value",
                 v.type_name()
@@ -555,7 +558,7 @@ fn scalar_text(value: &Node) -> Option<String> {
         Node::Str(s) | Node::Float(s) => Some(s.clone()),
         Node::Int(i) => Some(i.to_string()),
         Node::Bool(b) => Some(b.to_string()),
-        Node::Null | Node::Bytes(_) | Node::Seq(_) | Node::Map(_) => None,
+        Node::Null | Node::Never | Node::Bytes(_) | Node::Seq(_) | Node::Map(_) => None,
     }
 }
 
@@ -745,7 +748,7 @@ fn finish(pieces: Vec<Piece>, cased: bool) -> Test {
 
 /// Reads a Sigma string: `*` and `?` are wildcards, and a backslash escapes
 /// a wildcard, a backslash, or — under `expand` — a percent sign.
-fn sigma_string(text: &str, expand: bool) -> Vec<Piece> {
+pub(crate) fn sigma_string(text: &str, expand: bool) -> Vec<Piece> {
     let mut pieces = Vec::new();
     let mut lit = Vec::new();
     let mut chars = text.chars().peekable();

@@ -31,6 +31,8 @@ const MAX_COLLECTION_DEPTH: usize = 64;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Node {
     Null,
+    /// An empty scalar tagged `!never`.
+    Never,
     Bool(bool),
     Int(i64),
     /// A floating-point number, kept as written.
@@ -48,7 +50,7 @@ impl Node {
     /// plus the bytes of its text — scalars and mapping keys.
     fn weight(&self) -> usize {
         match self {
-            Self::Null | Self::Bool(_) | Self::Int(_) => 1,
+            Self::Null | Self::Never | Self::Bool(_) | Self::Int(_) => 1,
             Self::Float(s) | Self::Str(s) => 1 + s.len(),
             Self::Bytes(b) => 1 + b.len(),
             Self::Seq(items) => items
@@ -64,6 +66,7 @@ impl Node {
     pub(crate) fn type_name(&self) -> &'static str {
         match self {
             Self::Null => "null",
+            Self::Never => "`!never`",
             Self::Bool(_) => "a boolean",
             Self::Int(_) => "an integer",
             Self::Float(_) => "a float",
@@ -190,6 +193,13 @@ impl Builder {
 
     fn scalar(value: String, style: TScalarStyle, tag: Option<&Tag>) -> Result<Node, String> {
         if let Some(tag) = tag {
+            if tag.handle == "!" && tag.suffix == "never" {
+                return if value.is_empty() {
+                    Ok(Node::Never)
+                } else {
+                    Err("`!never` requires an empty string".to_string())
+                };
+            }
             if tag.handle == "!" && tag.suffix == BYTES_TAG {
                 return decode_bytes(&value).map(Node::Bytes);
             }
@@ -306,7 +316,7 @@ impl Builder {
                         *key = Some(s);
                         None
                     }
-                    Node::Bytes(_) | Node::Seq(_) | Node::Map(_) => {
+                    Node::Never | Node::Bytes(_) | Node::Seq(_) | Node::Map(_) => {
                         Some("a mapping key is not a text scalar".to_string())
                     }
                 },

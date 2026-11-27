@@ -29,7 +29,13 @@ rejections and compilation statistics. For a local archive:
 cargo run --example et_open_summary -- emerging.rules.tar.gz 11342
 ```
 
-Not there yet: the SigmaHQ converter and the fields of host records.
+SigmaHQ release and emerging-threats zip converters are available, with
+OS-specific mappings, host field catalogs and version-only inspection.
+They accept zip bytes and make no network requests. See the crate
+documentation for mapping data, conversion summaries and `!never`
+conditions.
+
+Not there yet: event-interface implementations for host records.
 
 ## Building
 

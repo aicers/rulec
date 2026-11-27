@@ -316,11 +316,7 @@ fn kinds_and_catalog_answers() {
         field_status(RawEventKind::Conn, "uri.normalized"),
         FieldStatus::NotInKind
     );
-    for kind in [
-        RawEventKind::ProcessCreate,
-        RawEventKind::Smtp,
-        RawEventKind::Log,
-    ] {
+    for kind in [RawEventKind::Smb, RawEventKind::Smtp, RawEventKind::Log] {
         assert_eq!(catalog_fields(kind), None);
         assert_eq!(
             field_status(kind, "orig_addr"),
@@ -614,14 +610,14 @@ fn rules_naming_unknown_fields() {
         unknown_fields(&unused).unwrap(),
         vec!["missing", "missing_ref"]
     );
-    let host = rule(
-        "host",
-        "process_create",
+    let uncataloged = rule(
+        "uncataloged",
+        "smb",
         "    sel:\n        Image|endswith: '\\cmd.exe'\n    condition: sel\n",
     );
     assert_eq!(
-        unknown_fields(&host),
-        Err(KindNotCataloged(RawEventKind::ProcessCreate))
+        unknown_fields(&uncataloged),
+        Err(KindNotCataloged(RawEventKind::Smb))
     );
 }
 
