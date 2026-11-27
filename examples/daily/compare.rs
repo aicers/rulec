@@ -89,6 +89,7 @@ fn source_scopes(line: &[u8]) -> BTreeSet<String> {
                 .any(|v| matches!(v.trim(), "to_client" | "from_server"))
     });
     let mut scopes = BTreeSet::new();
+    let mut file_data = false;
     for (key, value) in options {
         let scope = match key {
             "ssh.software" | "ssh_software" if !request_only => Some("ssh_server_banner"),
@@ -98,11 +99,10 @@ fn source_scopes(line: &[u8]) -> BTreeSet<String> {
             "dns.query" | "dns_query" => Some("dns"),
             "http.stat_code" | "http_stat_code" | "http.stat_msg" | "http_stat_msg"
             | "http.response_body" | "http_server_body" => Some("http_response"),
-            "file.data" | "file_data" => Some(if request_only {
-                "http_request"
-            } else {
-                "http_response"
-            }),
+            "file.data" | "file_data" => {
+                file_data = true;
+                None
+            }
             "pcre" => {
                 let flags = value
                     .trim_matches('"')
@@ -127,6 +127,15 @@ fn source_scopes(line: &[u8]) -> BTreeSet<String> {
         };
         if let Some(scope) = scope {
             scopes.insert(scope.into());
+        }
+    }
+    if file_data {
+        if request_only {
+            scopes.insert("http_request".into());
+        } else if response_only {
+            scopes.insert("http_response".into());
+        } else if !scopes.contains("http_request") && !scopes.contains("http_response") {
+            scopes.extend(["http_request".into(), "http_response".into()]);
         }
     }
     scopes
@@ -347,16 +356,21 @@ pub(super) fn classify(
             };
             if s {
                 for scope in &rule.scopes {
-                    // Direction-specific buffers already identify the side. A
-                    // neutral SSH rule has both alternatives, so a client-only
-                    // alert cannot prove server-banner coverage.
+                    // Neutral buffers have both alternatives. An alert only
+                    // establishes coverage for the side that actually fired.
+                    let neutral_http = rule.fields.iter().any(|field| field == "body.request")
+                        && rule.fields.iter().any(|field| field == "body.response");
                     let neutral_ssh = scope == "ssh_server_banner"
                         && rule.fields.iter().any(|field| field.starts_with("client"));
-                    if neutral_ssh
+                    let direction = match scope.as_str() {
+                        "http_request" if neutral_http => Some(Direction::ToServer),
+                        "http_response" if neutral_http => Some(Direction::ToClient),
+                        "ssh_server_banner" if neutral_ssh => Some(Direction::ToClient),
+                        _ => None,
+                    };
+                    if let Some(direction) = direction
                         && !suricata.get(key).is_some_and(|events| {
-                            events
-                                .iter()
-                                .any(|event| event.direction == Direction::ToClient)
+                            events.iter().any(|event| event.direction == direction)
                         })
                     {
                         continue;
@@ -857,6 +871,70 @@ mod tests {
     }
 
     #[test]
+    fn neutral_http_body_coverage_requires_alerts_in_each_direction() {
+        let line = br#"alert http any any -> any any (msg:"synthetic"; file.data; content:"probe"; sid:1; rev:1;)"#.to_vec();
+        let rule = rulec::Rule::from_yaml(
+            "source: et_open\nsource_rule_id: '1'\nmodel: EtSignature\ntitle: synthetic\nlogsource:\n  category: http\ndetection:\n  request: {body.request: probe}\n  response: {body.response: probe, method: GET}\n  condition: request or response\n",
+        )
+        .unwrap();
+        let infos = RuleInfo::from_rules(&[rule], &[line]).unwrap();
+        for (directions, request, response) in [
+            (vec![Direction::ToServer], true, false),
+            (vec![Direction::ToClient], false, true),
+            (vec![Direction::Unknown], false, false),
+            (vec![Direction::ToServer, Direction::ToClient], true, true),
+        ] {
+            let events = directions
+                .into_iter()
+                .map(|direction| {
+                    let mut event = evidence().pop().unwrap();
+                    event.direction = direction;
+                    event
+                })
+                .collect();
+            let hits = BTreeMap::from([(key("1", 1), events)]);
+            let result = classify(
+                &infos,
+                &hits,
+                &hits,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            );
+            for (scope, covered) in [("http_request", request), ("http_response", response)] {
+                assert_eq!(
+                    !result.coverage.get(scope).unwrap().is_empty(),
+                    covered,
+                    "{scope}"
+                );
+                assert_eq!(result.missing_scopes.iter().any(|s| s == scope), !covered);
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_neutral_http_body_belongs_to_both_scopes() {
+        for buffer in ["file.data", "file_data"] {
+            for (flow, expected) in [
+                ("", vec!["http_request", "http_response"]),
+                ("flow:to_server;", vec!["http_request"]),
+                ("flow:to_client;", vec!["http_response"]),
+            ] {
+                let line = format!(
+                    "alert http any any -> any any (msg:\"synthetic\"; {flow} {buffer}; content:\"probe\"; sid:1;)"
+                )
+                .into_bytes();
+                let dropped = BTreeMap::from([("unsupported_regex".into(), vec!["1".into()])]);
+                let rejected = rejected_scopes(&[line], &dropped);
+                assert_eq!(
+                    rejected.keys().map(String::as_str).collect::<Vec<_>>(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ssh_server_scope_requires_software_instead_of_only_protocol_version() {
         for (buffer, field, software) in [
             ("ssh.proto", "server.proto", false),
@@ -1099,10 +1177,31 @@ mod tests {
                 .values()
                 .all(|rules| !rules.is_empty())
         );
-        for entry in fs::read_dir(output).unwrap() {
+        for entry in fs::read_dir(&output).unwrap() {
             let text = fs::read_to_string(entry.unwrap().path()).unwrap();
             assert!(!text.contains("detection:"));
             assert!(!text.contains("alert http"));
+        }
+        let metadata_path = input.join("suricata.json");
+        let metadata: Value = read(&metadata_path).unwrap();
+        for (field, value, expected) in [
+            ("version", json!("8.0.3"), "expected Suricata 7.0.3"),
+            (
+                "et_archive_sha256",
+                json!("changed"),
+                "archive bytes or HOME_NET differ",
+            ),
+            (
+                "home_net",
+                json!(["192.0.2.0/24"]),
+                "archive bytes or HOME_NET differ",
+            ),
+        ] {
+            let mut mismatched = metadata.clone();
+            mismatched[field] = value;
+            write(&metadata_path, &mismatched).unwrap();
+            let error = run(&input, &output).unwrap_err();
+            assert!(error.to_string().contains(expected), "{field}: {error}");
         }
     }
 }

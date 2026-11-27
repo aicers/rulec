@@ -88,7 +88,10 @@ version does not establish server software coverage. Each scope lists
 the observed accepted SIDs and their classifications. A direction-neutral
 SSH rule only establishes server
 coverage when a Suricata alert is oriented from server to client; a
-client-banner alert cannot establish that scope. A scope with accepted
+client-banner alert cannot establish that scope. Similarly, a neutral
+HTTP `file.data` rule establishes request or response coverage only when
+an alert is observed in that direction. An unknown alert direction
+establishes neither side for these neutral rules. A scope with accepted
 rules but no observed Suricata alert fails the run. If all source rules
 for a scope were rejected, the result's `no_comparable_rules` and run
 summary instead report **no comparable rule** with every rejected SID

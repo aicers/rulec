@@ -320,6 +320,71 @@ mod tests {
     }
 
     #[test]
+    fn accounting_failure_is_recorded_before_processing_the_next_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("work");
+        let output = directory.path().join("results");
+        fs::create_dir(&input).unwrap();
+        // Duplicate rejected IDs violate the audit even when totals balance.
+        let line = "alert http any any -> any any (msg:\"synthetic\"; flowbits:isset,test; http.uri; content:\"probe\"; sid:1; rev:1; metadata:updated_at 2026_01_01;)\n";
+        let text = line.repeat(2);
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(u64::try_from(text.len()).unwrap());
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "rules/emerging-dns.rules", text.as_bytes())
+            .unwrap();
+        fs::write(
+            input.join("et.tar.gz"),
+            archive.into_inner().unwrap().finish().unwrap(),
+        )
+        .unwrap();
+        write(
+            &input.join("sources.json"),
+            &serde_json::json!([
+                {"source":"et_open", "path":"et.tar.gz", "version":"1", "error":null},
+                {"source":"sigma_hq", "path":null, "version":null, "error":"independent download failure"}
+            ]),
+        )
+        .unwrap();
+        run(&input, &output).unwrap();
+        let reports: Vec<Report> = read(&output.join("conversion.json")).unwrap();
+        let et = reports.first().unwrap();
+        assert_eq!(et.input_count, 2);
+        assert!(
+            et.error
+                .as_deref()
+                .unwrap()
+                .contains("more than one reason/entry")
+        );
+        assert_eq!(
+            et.summary
+                .as_ref()
+                .unwrap()
+                .dropped
+                .get("needs_state")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(!input.join("et.bundle").exists());
+        let next: Report = read(&output.join("sigma_hq.json")).unwrap();
+        assert_eq!(next.error.as_deref(), Some("independent download failure"));
+        super::super::compare::run(&input, &output).unwrap();
+        let differential: serde_json::Value = read(&output.join("differential.json")).unwrap();
+        assert_eq!(differential["status"], "skipped");
+        assert!(
+            differential["reason"]
+                .as_str()
+                .unwrap()
+                .contains("more than one reason/entry")
+        );
+    }
+
+    #[test]
     fn sigma_count_excludes_statuses_and_deprecated_directories() {
         use std::io::Write;
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
