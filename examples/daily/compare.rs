@@ -451,8 +451,9 @@ pub(super) fn classify(
                     })
                     .collect(),
             );
+        } else {
+            result.missing_scopes.push(scope.clone());
         }
-        result.missing_scopes.push(scope.clone());
     }
     if !result.missing_scopes.is_empty() {
         result.errors.push(format!(
@@ -740,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn all_rejected_scopes_fail_and_report_reasons() {
+    fn all_rejected_scopes_report_reasons_without_failing() {
         // Neither scope nor SID is special: the decision uses this conversion's
         // accepted rules and rejection reasons, joined to the same source lines.
         let lines = vec![
@@ -783,11 +784,8 @@ mod tests {
                 .collect();
             let s = BTreeMap::from([(key("1", 1), evidence())]);
             let result = classify(&[covered], &s, &s, &BTreeMap::new(), &dropped, &rejected);
-            assert_eq!(result.missing_scopes, vec![scope.to_string()]);
-            assert_eq!(
-                result.errors,
-                vec![format!("no compared rules in scopes: {scope}")]
-            );
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+            assert!(result.missing_scopes.is_empty());
             assert_eq!(result.no_comparable_rules.get(scope), rejected.get(scope));
         }
     }
