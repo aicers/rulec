@@ -121,7 +121,7 @@ fn sigma_count(bytes: &[u8], emerging: bool) -> Result<usize> {
     };
     let mut count = 0;
     for n in 0..zip.len() {
-        let mut file = zip.by_index(n)?;
+        let file = zip.by_index_raw(n)?;
         if !file.is_file() {
             continue;
         }
@@ -143,6 +143,8 @@ fn sigma_count(bytes: &[u8], emerging: bool) -> Result<usize> {
         {
             continue;
         }
+        drop(file);
+        let mut file = zip.by_index(n)?;
         let mut text = String::new();
         let parsed = file
             .read_to_string(&mut text)
@@ -368,6 +370,33 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn sigma_count_does_not_decode_excluded_members() {
+        use std::io::Write;
+        for path in ["rules/a.yml", "rules-emerging-threats/a.yml"] {
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            for (name, text) in [("outside.bin", "opaque"), (path, "status: stable")] {
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(text.as_bytes()).unwrap();
+            }
+            let mut bytes = zip.finish().unwrap().into_inner();
+            // The excluded member advertises a codec the crate does not enable.
+            for (signature, offset) in [(b"PK\x03\x04", 8), (b"PK\x01\x02", 10)] {
+                let header = bytes.windows(4).position(|s| s == signature).unwrap();
+                bytes
+                    .get_mut(header + offset..header + offset + 2)
+                    .unwrap()
+                    .copy_from_slice(&12_u16.to_le_bytes());
+            }
+            assert_eq!(
+                sigma_count(&bytes, path.starts_with("rules-emerging")).unwrap(),
+                1
+            );
+        }
+    }
+
     #[test]
     fn source_failures_preserve_other_reports_and_et_skip_reason() {
         use std::io::Write;
