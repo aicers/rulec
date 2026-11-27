@@ -203,6 +203,41 @@ fn same_archive_error(bytes: &[u8], emerging: bool) -> String {
 }
 
 #[test]
+fn oversized_selected_members_fail_both_apis_but_outside_members_are_ignored() {
+    let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
+    for (path, emerging) in [
+        ("rules/large.yml", false),
+        ("version.txt", false),
+        ("rules-emerging-threats/large.yml", true),
+    ] {
+        let bytes = archive(
+            &[("rules/a.yml", b"x"), (path, &oversized)],
+            SHA,
+            &[Some(MTIME); 2],
+        );
+        let message = same_archive_error(&bytes, emerging);
+        assert!(message.contains("uncompressed data exceeds"), "{message}");
+        assert!(message.contains(path), "{message}");
+    }
+    let rule = simple("r", "{category: proxy}", "{c-uri: /example}", "selection");
+    let bytes = archive(
+        &[
+            ("rules/a.yml", rule.as_bytes()),
+            ("version.txt", VERSION_TEXT.as_bytes()),
+            ("outside.yml", &oversized),
+        ],
+        "",
+        &[],
+    );
+    let conversion = convert_sigma_hq(&bytes, None, &Blocklist::default()).unwrap();
+    assert_accepted(&conversion, 1);
+    assert_eq!(
+        read_sigma_hq_version(&bytes, None).unwrap(),
+        conversion.summary.source_version
+    );
+}
+
+#[test]
 fn archive_errors_follow_required_priority_for_both_apis() {
     for emerging in [false, true] {
         assert!(same_archive_error(b"not a zip", emerging).contains("cannot read the zip"));
@@ -348,6 +383,70 @@ fn added_conditions_guard_ps_channels_event_ids_and_registry_types() {
                 !matched_ids(&compiled, &event, &[]).is_empty(),
                 allowed.contains(&event_type)
             );
+        }
+    }
+}
+
+#[test]
+fn added_conditions_preserve_them_exclusions_and_explicit_auxiliary_references() {
+    for (condition, expected) in [
+        ("1 of them", [true, true, true, false, false, true]),
+        ("all of them", [false, false, true, false, false, true]),
+        (
+            "[all of them, _aux]",
+            [false, true, true, false, true, true],
+        ),
+        ("all of *", [false, false, false, false, false, true]),
+        ("all of _*", [false, true, false, false, true, true]),
+        ("_aux", [false, true, false, false, true, true]),
+    ] {
+        for (logsource, kind, field, guarded) in [
+            (
+                "{product: windows, category: process_creation}",
+                RawEventKind::ProcessCreate,
+                "command_line",
+                false,
+            ),
+            (
+                "{product: windows, service: security}",
+                RawEventKind::WindowsEventLog,
+                "event_data.CommandLine",
+                true,
+            ),
+        ] {
+            let rule = source_rule(
+                "aux",
+                logsource,
+                &format!(
+                    "  selection: {{CommandLine|contains: needle}}\n  _aux: {{CommandLine|contains: other}}\n  secondary: {{CommandLine|contains: second}}\n  condition: {condition}\n"
+                ),
+            );
+            let conversion = convert_one(&rule);
+            assert_accepted(&conversion, 1);
+            let compiled = compile(conversion.rules).unwrap();
+            for (value, matches) in [
+                "needle",
+                "needle other",
+                "needle second",
+                "neither",
+                "other",
+                "needle other second",
+            ]
+            .into_iter()
+            .zip(expected)
+            {
+                for channel in ["Security", "System"] {
+                    let event = TestEvent::new(kind)
+                        .os(OsFamily::Windows)
+                        .text(field, &[value])
+                        .text("channel", &[channel]);
+                    assert_eq!(
+                        !matched_ids(&compiled, &event, &[]).is_empty(),
+                        matches && (!guarded || channel == "Security"),
+                        "{logsource} {condition} {value} {channel}"
+                    );
+                }
+            }
         }
     }
 }

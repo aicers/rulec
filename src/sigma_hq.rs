@@ -17,11 +17,15 @@ use crate::{
     yaml::{self, Node},
 };
 
+// Well above observed upstream sizes, while bounding caller-supplied expansion.
+const MAX_MEMBER_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+
 /// An archive-level error converting or inspecting a SigmaHQ source.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SigmaHqError {
-    /// The bytes or an archive member cannot be read as a zip.
+    /// The zip cannot be read or exceeds the documented expansion limits.
     #[error("cannot read the zip: {0}")]
     NotAZip(String),
     /// The selected source directory contains no rule files.
@@ -131,6 +135,7 @@ fn unpack(
     let mut missing_time = false;
     let mut files = Vec::new();
     let mut version_text = None;
+    let mut remaining = MAX_ARCHIVE_BYTES;
     for index in 0..zip.len() {
         // Excluded members need no decoder, even if their codec is disabled.
         let file = zip.by_index_raw(index).map_err(bad_zip)?;
@@ -170,10 +175,9 @@ fn unpack(
             continue;
         }
         drop(file);
-        let mut file = zip.by_index(index).map_err(bad_zip)?;
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents)
-            .map_err(|e| bad_zip(format!("reading {}: {e}", file.name())))?;
+        let file = zip.by_index(index).map_err(bad_zip)?;
+        let name = file.name().to_string();
+        let contents = read_member(file, &name, &mut remaining)?;
         if is_version {
             version_text = String::from_utf8(contents).ok()
         } else if let Some(path) = relative {
@@ -229,6 +233,28 @@ fn unpack(
         content_digest: content_digest(files.iter().map(|(p, b)| (p, b))),
     };
     Ok(Archive { files, version })
+}
+
+fn read_member(
+    reader: impl Read,
+    name: &str,
+    remaining: &mut u64,
+) -> Result<Vec<u8>, SigmaHqError> {
+    let limit = MAX_MEMBER_BYTES.min(*remaining);
+    let mut contents = Vec::new();
+    // Read one extra byte to detect overflow without trusting zip size metadata.
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut contents)
+        .map_err(|e| bad_zip(format!("reading {name}: {e}")))?;
+    let size = u64::try_from(contents.len()).map_err(bad_zip)?;
+    if size > limit {
+        return Err(bad_zip(format!(
+            "reading {name}: uncompressed data exceeds the {MAX_MEMBER_BYTES}-byte member or {MAX_ARCHIVE_BYTES}-byte archive limit"
+        )));
+    }
+    *remaining -= size;
+    Ok(contents)
 }
 
 fn strict_date(text: &str) -> Option<Date> {
@@ -566,17 +592,23 @@ fn add_logsource(detection: &mut Node, add: &Node) -> Result<(), String> {
     let Node::Map(entries) = detection else {
         return Err(reason::FORMAT_ERROR.into());
     };
+    let searches: Vec<_> = entries
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| *name != "condition" && !name.starts_with('_'))
+        .map(|name| format!("s_{name}"))
+        .collect();
     for (name, body) in entries.iter_mut() {
         if name != "condition" {
             *name = format!("s_{name}");
             continue;
         }
         match body {
-            Node::Str(condition) => *condition = guarded_condition(condition),
+            Node::Str(condition) => *condition = guarded_condition(condition, &searches),
             Node::Seq(conditions) => {
                 for condition in conditions {
                     if let Node::Str(text) = condition {
-                        *text = guarded_condition(text);
+                        *text = guarded_condition(text, &searches);
                     } else {
                         return Err(reason::FORMAT_ERROR.into());
                     }
@@ -589,7 +621,7 @@ fn add_logsource(detection: &mut Node, add: &Node) -> Result<(), String> {
     Ok(())
 }
 
-fn guarded_condition(original: &str) -> String {
+fn guarded_condition(original: &str, searches: &[String]) -> String {
     // Keep whitespace and parentheses as tokens too, so only identifier
     // words change. `all` and `1` may themselves be identifier names when
     // they are not followed by `of`.
@@ -610,31 +642,32 @@ fn guarded_condition(original: &str) -> String {
         tokens.push(word);
     }
     let mut out = String::from("(");
-    let mut pattern_target = false;
-    for (index, token) in tokens.iter().enumerate() {
-        if token.chars().all(char::is_whitespace) {
-            out.push_str(token);
-            continue;
+    let mut tokens = tokens
+        .into_iter()
+        .filter(|token| !token.chars().all(char::is_whitespace))
+        .peekable();
+    while let Some(token) = tokens.next() {
+        if out.len() > 1 {
+            out.push(' ');
         }
-        // After `of`, even an operator's spelling is an identifier
-        // pattern. Consume it before looking for the next operator.
-        if pattern_target {
-            out.push_str("s_");
-            out.push_str(if *token == "them" { "*" } else { token });
-            pattern_target = false;
-            continue;
-        }
-        let next = tokens
-            .iter()
-            .skip(index + 1)
-            .find(|t| !t.chars().all(char::is_whitespace));
-        match *token {
-            "of" => {
-                out.push_str(token);
-                pattern_target = true;
+        match token {
+            "1" | "all" if tokens.peek() == Some(&"of") => {
+                tokens.next();
+                let target = tokens.next().unwrap_or_default();
+                if target == "them" {
+                    // `them` excludes underscore-prefixed identifiers before
+                    // renaming; the renamed wildcard s_* would include them.
+                    let operator = if token == "all" { " and " } else { " or " };
+                    out.push('(');
+                    out.push_str(&searches.join(operator));
+                    out.push(')');
+                } else {
+                    out.push_str(token);
+                    out.push_str(" of s_");
+                    out.push_str(target);
+                }
             }
             "and" | "or" | "not" | "(" | ")" => out.push_str(token),
-            "1" | "all" if next == Some(&"of") => out.push_str(token),
             _ => {
                 out.push_str("s_");
                 out.push_str(token);
@@ -794,6 +827,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn member_reads_bound_actual_expansion_and_share_an_archive_budget() {
+        let mut remaining = 6;
+        assert_eq!(
+            read_member(&b"abcd"[..], "first", &mut remaining).unwrap(),
+            b"abcd"
+        );
+        assert_eq!(remaining, 2);
+        let error = read_member(&b"abc"[..], "second", &mut remaining).unwrap_err();
+        assert!(matches!(error, SigmaHqError::NotAZip(_)));
+        assert!(error.to_string().contains("reading second"));
+        assert_eq!(
+            read_member(&b"ab"[..], "exact", &mut remaining).unwrap(),
+            b"ab"
+        );
+        assert_eq!(remaining, 0);
+        assert!(read_member(&b""[..], "empty", &mut remaining).is_ok());
+        assert!(read_member(&b"x"[..], "overflow", &mut remaining).is_err());
+
+        let bytes = vec![0; usize::try_from(MAX_MEMBER_BYTES).unwrap() + 1];
+        let mut remaining = MAX_ARCHIVE_BYTES;
+        assert!(read_member(bytes.as_slice(), "oversized", &mut remaining).is_err());
+        assert!(
+            read_member(
+                bytes.get(..bytes.len() - 1).unwrap(),
+                "exact member",
+                &mut remaining
+            )
+            .is_ok()
+        );
+        assert_eq!(remaining, MAX_ARCHIVE_BYTES - MAX_MEMBER_BYTES);
+    }
+
+    #[test]
     fn every_mapping_converts_to_its_kind_os_and_added_expression() {
         for mapping in MAPPINGS.iter() {
             let detection = Node::Map(vec![
@@ -840,15 +906,15 @@ mod tests {
     #[test]
     fn condition_renaming_is_token_based_and_keeps_no_guard_unchanged() {
         assert_eq!(
-            guarded_condition("(selection and not filter) or 1 of sel*"),
-            "((s_selection and not s_filter) or 1 of s_sel*) and rulec_logsource"
+            guarded_condition("(selection and not filter) or 1 of sel*", &[]),
+            "(( s_selection and not s_filter ) or 1 of s_sel*) and rulec_logsource"
         );
         assert_eq!(
-            guarded_condition("all of them"),
-            "(all of s_*) and rulec_logsource"
+            guarded_condition("all of them", &["s_a".into(), "s_b".into()]),
+            "((s_a and s_b)) and rulec_logsource"
         );
         assert_eq!(
-            guarded_condition("1 and all"),
+            guarded_condition("1 and all", &[]),
             "(s_1 and s_all) and rulec_logsource"
         );
         let original = "selection";

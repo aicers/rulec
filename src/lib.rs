@@ -132,7 +132,10 @@
 //! [`read_sigma_hq_version`] and [`read_sigma_hq_emerging_version`] inspect
 //! that same version and digest without parsing rules or compiling patterns;
 //! they return the same archive errors as conversion, in the order invalid
-//! zip, no selected files, missing version/commit information.
+//! zip, no selected files, missing version/commit information. Selected files
+//! and release `version.txt` are limited to 8 MiB each and 256 MiB combined
+//! after decompression; exceeding either limit returns [`SigmaHqError::NotAZip`]
+//! from both APIs. Out-of-scope entries are never decompressed.
 //!
 //! Release conversion selects only `rules/**/*.yml` and `rules/**/*.yaml`,
 //! excluding any `deprecated` directory below `rules/`. Emerging conversion
@@ -162,8 +165,9 @@
 //! (the destination of keyword lists, with `contains`). `unmapped` wins over
 //! `fields`, then `other` applies. `snake_case_column` inserts `_` before an
 //! uppercase character following a lowercase character or digit, lowercases
-//! the result and accepts only fixed catalog columns. It never maps agent
-//! metadata or `logon_id_full`. `product`, `category`, and `service` match
+//! the result and accepts only fixed catalog columns, excluding normalized
+//! aliases of `unmapped` names too. The table excludes agent metadata and
+//! `logon_id_full`. `product`, `category`, and `service` match
 //! exactly, including absence; other logsource keys are ignored. Adding a
 //! mapping needs no converter code change. The data's header documents the
 //! same schema, and tests validate target fields and added conditions.
@@ -180,7 +184,11 @@
 //!
 //! An `add` condition is named `rulec_logsource`. All original identifiers
 //! are renamed with `s_`; condition names and patterns receive the same
-//! prefix (`1 of sel*` becomes `1 of s_sel*`, `them` becomes `s_*`). The
+//! prefix (`1 of sel*` becomes `1 of s_sel*`). `1 of them` and `all of them`
+//! expand to a parenthesized OR or AND of the renamed identifiers whose
+//! original names did not start with `_`, in document order. For example,
+//! `all of them` with identifiers `a`, `_aux`, `b` becomes `(s_a and s_b)`;
+//! explicit references and patterns can still select `s__aux`. The
 //! condition becomes `(<renamed original>) and rulec_logsource`, for each
 //! member of a condition list. Thus the added condition cannot be selected
 //! by the original `them` or name patterns. Mappings without `add` keep

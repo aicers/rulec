@@ -68,20 +68,10 @@ impl Mapping {
             Other::None => None,
             Other::Prefix(prefix) => Some(format!("{prefix}{name}")),
             Other::SnakeCaseColumn => {
-                let mut previous = None;
-                let mut target = String::new();
-                for c in name.chars() {
-                    if c.is_ascii_uppercase()
-                        && previous
-                            .is_some_and(|p: char| p.is_ascii_lowercase() || p.is_ascii_digit())
-                    {
-                        target.push('_');
-                    }
-                    target.push(c.to_ascii_lowercase());
-                    previous = Some(c);
-                }
-                // Agent metadata and full-width logon ids have no Sigma field.
-                if matches!(target.as_str(), "agent_name" | "agent_id" | "logon_id_full") {
+                let target = snake_case(name);
+                // Exclusions also cover aliases that normalize to the same
+                // column, so alternate capitalization cannot bypass the table.
+                if self.unmapped.iter().any(|name| snake_case(name) == target) {
                     return None;
                 }
                 catalog_fields(self.kind)
@@ -90,6 +80,21 @@ impl Mapping {
             }
         }
     }
+}
+
+fn snake_case(name: &str) -> String {
+    let mut previous = None;
+    let mut target = String::new();
+    for c in name.chars() {
+        if c.is_ascii_uppercase()
+            && previous.is_some_and(|p: char| p.is_ascii_lowercase() || p.is_ascii_digit())
+        {
+            target.push('_');
+        }
+        target.push(c.to_ascii_lowercase());
+        previous = Some(c);
+    }
+    target
 }
 
 fn string(node: Option<&Node>, key: &str) -> Result<String, String> {
@@ -211,6 +216,31 @@ mod tests {
                 assert!(crate::catalog_field_prefixes(mapping.kind).contains(&prefix.as_str()));
             }
         }
+    }
+
+    #[test]
+    fn snake_case_exclusions_come_from_the_table_and_cover_aliases() {
+        for mapping in MAPPINGS
+            .iter()
+            .filter(|m| matches!(m.other, Other::SnakeCaseColumn))
+        {
+            for name in ["AgentName", "AgentId", "LogonIdFull"] {
+                assert!(mapping.unmapped.iter().any(|excluded| excluded == name));
+                assert_eq!(mapping.field(name), None);
+                assert_eq!(mapping.field(&snake_case(name)), None);
+            }
+            for name in ["AgentID", "Agent_Name", "Logon_IdFull", "logon_id"] {
+                assert_eq!(mapping.field(name), None);
+            }
+        }
+        // The generic snake-case rule itself does not exclude these columns.
+        let mut mappings = load().unwrap();
+        let mapping = mappings
+            .iter_mut()
+            .find(|m| m.kind_name == "process_create")
+            .unwrap();
+        mapping.unmapped.clear();
+        assert_eq!(mapping.field("AgentName").as_deref(), Some("agent_name"));
     }
 }
 
