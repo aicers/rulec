@@ -37,6 +37,15 @@ conditions.
 
 Not there yet: event-interface implementations for host records.
 
+## Daily source checks
+
+The independent [daily workflow](docs/daily.md) audits the latest three
+source conversions and compares ET Open against Suricata 7.0.3 on public
+captures and a fixed synthetic probe. HTTP response coverage still relies
+on that probe, a documented deviation from the requirement for existing
+public captures. The documentation covers field provenance, coverage,
+artifacts, failure handling, issue filing and local replay.
+
 ## Building
 
 The crate builds a vendored copy of vectorscan from source through

@@ -1410,3 +1410,52 @@ fn converted_rules_match_all_five_giganto_record_kinds() {
         "90005"
     );
 }
+
+#[test]
+fn public_diagnostics_use_converter_header_and_threshold_definitions() {
+    for (condition, missing) in [
+        ("http.header; content:\"X-Foo: bar\";", true),
+        ("http.header; content:\"Cookie: a\";", true),
+        ("http.header; content:\"User-Agent: x\";", false),
+        ("http.header; content:\"X-Foo:\";", false),
+    ] {
+        let text = rule(99001, "http any any -> any any", condition);
+        let diagnostics = rulec::inspect_et_open_rule(text.as_bytes(), Model::EtSignature).unwrap();
+        assert_eq!(diagnostics.header_values_partly_missing, missing);
+        assert!(!diagnostics.ignores_threshold);
+        let converted = convert(&text);
+        assert_eq!(
+            converted.summary.header_values_partly_missing,
+            usize::from(missing)
+        );
+        assert!(
+            converted
+                .rules
+                .first()
+                .unwrap()
+                .fields()
+                .contains(&"header_block".to_owned())
+        );
+    }
+    for option in [
+        "threshold: type limit, track by_src, count 1, seconds 30;",
+        "detection_filter: track by_src, count 1, seconds 30;",
+    ] {
+        let text = rule(
+            99002,
+            "http any any -> any any",
+            &format!("http.uri; content:\"x\"; {option}"),
+        );
+        assert!(
+            rulec::inspect_et_open_rule(text.as_bytes(), Model::EtSignature)
+                .unwrap()
+                .ignores_threshold
+        );
+    }
+    assert_eq!(
+        rulec::inspect_et_open_rule(b"not a rule", Model::EtSignature)
+            .unwrap_err()
+            .reason(),
+        reason::FORMAT_ERROR
+    );
+}

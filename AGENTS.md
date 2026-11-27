@@ -586,4 +586,8 @@ Where the crate handles key material or secrets:
 - Every Rust job but `Rust format` compiles vectorscan from source, which
   needs CMake and Boost's headers; CI installs `libboost-dev` first.
   `README.md` says how to install both locally.
+- The independent daily workflow's orchestration tests run locally with
+  `python3 -m unittest discover -s .github/daily -p 'test_*.py'`. They use
+  fake downloads and a fake issue API, without network access. Its Rust
+  example tests are included in `cargo test`.
 - `CI Gate` fails unless every other job passed or was skipped.
