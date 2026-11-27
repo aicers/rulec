@@ -83,8 +83,10 @@ The fixed probes are not altered to follow the current rule set. Coverage
 is measured afresh each run: an accepted ET rule must actually alert in
 Suricata in each of these five scopes: HTTP request, HTTP response,
 TLS certificate response (`subject.joined`/`issuer.joined`), SSH server
-banner, and DNS. Each scope lists the observed accepted SIDs and their
-classifications. A direction-neutral SSH rule only establishes server
+software (`server.software`), and DNS. Checking only the SSH protocol
+version does not establish server software coverage. Each scope lists
+the observed accepted SIDs and their classifications. A direction-neutral
+SSH rule only establishes server
 coverage when a Suricata alert is oriented from server to client; a
 client-banner alert cannot establish that scope. Every scope without an
 observed accepted rule fails the run, including a scope whose source rules
@@ -183,6 +185,11 @@ limits. A supplied empty value is distinguished from an unavailable one.
 | `ttl` | `dns.answers[].ttl` representable as i32 |
 | `rtt`, `qclass`, `aa_flag`, `tc_flag`, `rd_flag`, `ra_flag` | Empty |
 <!-- markdownlint-enable MD013 -->
+
+If any answer lacks a string `rdata` or an i32-representable TTL, that
+array field retains its representable values and is marked incomplete
+for input-limit checks. A supplied empty answer array is complete;
+an absent array is unavailable.
 
 ### Tls
 

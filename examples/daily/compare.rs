@@ -91,9 +91,7 @@ fn source_scopes(line: &[u8]) -> BTreeSet<String> {
     let mut scopes = BTreeSet::new();
     for (key, value) in options {
         let scope = match key {
-            "ssh.software" | "ssh_software" | "ssh.proto" | "ssh_proto" if !request_only => {
-                Some("ssh_server_banner")
-            }
+            "ssh.software" | "ssh_software" if !request_only => Some("ssh_server_banner"),
             "tls.cert_subject" | "tls_cert_subject" | "tls.cert_issuer" | "tls_cert_issuer" => {
                 Some("tls_certificate_response")
             }
@@ -219,7 +217,7 @@ impl RuleInfo {
                 if kind == "Tls" && has(&["subject.joined", "issuer.joined"]) {
                     scopes.push("tls_certificate_response".into());
                 }
-                if kind == "Ssh" && has(&["server", "server.proto", "server.software"]) {
+                if kind == "Ssh" && has(&["server.software"]) {
                     scopes.push("ssh_server_banner".into());
                 }
                 if kind == "Dns" {
@@ -672,7 +670,7 @@ mod tests {
             (key("2", 1), evidence()),
             (key("4", 1), evidence()),
             (key("5", 1), evidence()),
-            (key("99", 1), evidence()),
+            (key("99", 1), [evidence(), evidence()].concat()),
         ]);
         let r = BTreeMap::from([
             (key("1", 1), evidence()),
@@ -709,7 +707,11 @@ mod tests {
         assert_eq!(result.rules.get(3).unwrap().pairs.len(), 2);
         assert_eq!(
             result.dropped_alerts.get("unsupported_keyword:x").unwrap()["count"],
-            1
+            2
+        );
+        assert_eq!(
+            result.dropped_alerts.get("unsupported_keyword:x").unwrap()["sids"],
+            json!(["99"])
         );
         assert_eq!(result.missing_scopes.len(), 4);
         assert!(!result.errors.is_empty());
@@ -827,6 +829,50 @@ mod tests {
     }
 
     #[test]
+    fn ssh_server_scope_requires_software_instead_of_only_protocol_version() {
+        for (buffer, field, software) in [
+            ("ssh.proto", "server.proto", false),
+            ("ssh_proto", "server.proto", false),
+            ("ssh.software", "server.software", true),
+            ("ssh_software", "server.software", true),
+        ] {
+            let line = format!(
+                "alert ssh any any -> any any (msg:\"synthetic\"; flow:to_client; {buffer}; content:\"2.0\"; sid:1; rev:1;)"
+            )
+            .into_bytes();
+            let rule = rulec::Rule::from_yaml(&format!(
+                "source: et_open\nsource_rule_id: '1'\nmodel: EtSignature\ntitle: synthetic\nlogsource:\n  category: ssh\ndetection:\n  s:\n    {field}: '2.0'\n  condition: s\n"
+            ))
+            .unwrap();
+            let infos = RuleInfo::from_rules(&[rule], std::slice::from_ref(&line)).unwrap();
+            assert_eq!(
+                infos
+                    .first()
+                    .unwrap()
+                    .scopes
+                    .contains(&"ssh_server_banner".into()),
+                software,
+                "{buffer}"
+            );
+            assert_eq!(source_scopes(&line).contains("ssh_server_banner"), software);
+            let hits = BTreeMap::from([(key("1", 1), evidence())]);
+            let result = classify(
+                &infos,
+                &hits,
+                &hits,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            );
+            assert_eq!(
+                result.coverage.get("ssh_server_banner").unwrap().is_empty(),
+                !software,
+                "{buffer}"
+            );
+        }
+    }
+
+    #[test]
     fn omitted_certificate_attribute_marks_suricata_only_pair() {
         let mut rule = info("1");
         rule.kind = "Tls".into();
@@ -853,6 +899,56 @@ mod tests {
         assert_eq!(rule.classification, "suricata_only");
         assert!(rule.input_limit);
         assert!(rule.pairs.first().unwrap().input_limit);
+    }
+
+    #[test]
+    fn dns_answer_availability_controls_suricata_only_input_limit() {
+        for (answers, field, incomplete) in [
+            (
+                json!([{"rdata":"example.invalid", "ttl":60}, {}]),
+                "answer",
+                true,
+            ),
+            (
+                json!([{"rdata":"example.invalid", "ttl":4294967295_u64}]),
+                "ttl",
+                true,
+            ),
+            (
+                json!([{"rdata":"example.invalid", "ttl":60}]),
+                "answer",
+                false,
+            ),
+            (json!([]), "answer", false),
+        ] {
+            let record = records::make(
+                &json!({"event_type":"dns", "dns":{"answers":answers}}),
+                &json!({}),
+            )
+            .unwrap()
+            .unwrap();
+            let mut rule = info("1");
+            rule.kind = "Dns".into();
+            rule.fields = vec![field.into()];
+            rule.scopes = vec!["dns".into()];
+            let mut events = evidence();
+            let event = events.first_mut().unwrap();
+            event.kind = "Dns".into();
+            event.missing = record.missing;
+            let available = BTreeMap::from([(("sample".into(), 1, "Dns".into()), events)]);
+            let result = classify(
+                &[rule],
+                &BTreeMap::from([(key("1", 1), evidence())]),
+                &Hits::new(),
+                &available,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            );
+            let rule = result.rules.first().unwrap();
+            assert_eq!(rule.classification, "suricata_only");
+            assert_eq!(rule.input_limit, incomplete, "{field}: {answers}");
+            assert_eq!(rule.pairs.first().unwrap().input_limit, incomplete);
+        }
     }
 
     #[test]

@@ -266,6 +266,33 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(api.create("test", "body"), "https://github.com/example/test/issues/101")
         self.assertEqual(api.calls[-1][0], "/issues/101")
 
+    def test_issue_retry_after_lost_response_preserves_quota_and_deduplication(self):
+        class LostResponse(FakeGithub):
+            def create(self, title, body):
+                url = super().create(title, body)
+                if len(self.writes) == 2:
+                    raise OSError("response lost after issue creation")
+                return url
+
+        context = {"run_url": "https://example.test/run", "source_version": "v1", "rulec_version": "0.1.0"}
+        with tempfile.TemporaryDirectory() as name:
+            output = Path(name)
+            run.save(output / "differential.json", {"rules": [rule(n) for n in range(25)]})
+            api = LostResponse()
+            with self.assertRaisesRegex(OSError, "response lost"):
+                run.publish(output, api, "schedule", "main", "main", context)
+            self.assertEqual(len(run.load(output / "issues.json")["created"]), 1)
+            self.assertEqual(len(api.existing), 2)
+            # The server's second write survived even though verification did not.
+            # A closed issue must still count against this run's quota on retry.
+            api.existing[-1]["state"] = "closed"
+            retry = run.publish(output, api, "schedule", "main", "main", context)
+            self.assertEqual(retry["already_created_this_run"], 2)
+            self.assertEqual(len(retry["created"]), 18)
+            self.assertEqual(len(retry["deferred"]), 5)
+            self.assertEqual(len(api.writes), 20)
+            self.assertEqual(len({run.KEY_PATTERN.search(body).group() for _, body in api.writes}), 20)
+
     def test_baseline_first_workflow_and_missing_artifact_are_explicit(self):
         class Api:
             def request(self, path):

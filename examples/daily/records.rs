@@ -92,7 +92,7 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
     };
     let mut data = serde_json::Map::new();
     let mut missing = BTreeSet::new();
-    let mut incomplete_names = Vec::new();
+    let mut incomplete_fields = Vec::new();
     for &field in catalog_fields(kind).ok_or("missing network catalog")? {
         let default = if matches!(field, "orig_addr" | "resp_addr") {
             json!("0.0.0.0")
@@ -190,25 +190,22 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
                 }
             }
             if let Some(answers) = dns["answers"].as_array() {
-                set(
-                    "answer",
-                    json!(
-                        answers
-                            .iter()
-                            .filter_map(|a| a["rdata"].as_str())
-                            .collect::<Vec<_>>()
-                    ),
-                );
-                set(
-                    "ttl",
-                    json!(
-                        answers
-                            .iter()
-                            .filter_map(|a| a["ttl"].as_i64())
-                            .filter_map(|t| i32::try_from(t).ok())
-                            .collect::<Vec<_>>()
-                    ),
-                );
+                let values: Vec<_> = answers.iter().filter_map(|a| a["rdata"].as_str()).collect();
+                let ttls: Vec<_> = answers
+                    .iter()
+                    .filter_map(|a| a["ttl"].as_i64())
+                    .filter_map(|t| i32::try_from(t).ok())
+                    .collect();
+                for (field, complete) in [
+                    ("answer", values.len() == answers.len()),
+                    ("ttl", ttls.len() == answers.len()),
+                ] {
+                    if !complete {
+                        incomplete_fields.push(field.to_owned());
+                    }
+                }
+                set("answer", json!(values));
+                set("ttl", json!(ttls));
             }
         }
         RawEventKind::Tls => {
@@ -235,7 +232,7 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
                         part.split_once('=')
                             .is_none_or(|(key, _)| !representable.contains(&key))
                     }) {
-                        incomplete_names.push(format!("{prefix}.joined"));
+                        incomplete_fields.push(format!("{prefix}.joined"));
                     }
                     for (key, suffix) in
                         [("C", "country"), ("O", "org_name"), ("CN", "common_name")]
@@ -335,7 +332,7 @@ pub(super) fn make(eve: &Value, flow: &Value) -> Result<Option<Record>> {
             missing.remove(derived);
         }
     }
-    missing.extend(incomplete_names);
+    missing.extend(incomplete_fields);
     let data = Value::Object(data);
     let value: Box<dyn Event> = match kind {
         RawEventKind::Conn => Box::new(serde_json::from_value::<Conn>(data)?),
@@ -441,6 +438,71 @@ mod tests {
         }
         assert!(!record.missing.contains("subject_common_name"));
         assert!(!record.missing.contains("issuer_org_unit_name"));
+    }
+
+    #[test]
+    fn dns_response_preserves_query_answers_ttls_and_zero_rcode() {
+        let event = json!({"event_type":"dns", "dns":{
+            "type":"answer", "id":42, "rcode":"NOERROR",
+            "queries":[{"rrname":"example.invalid", "rrtype":"AAAA"}],
+            "answers":[
+                {"rdata":"2001:db8::1", "ttl":60},
+                {"rdata":"2001:db8::2", "ttl":120}
+            ]
+        }});
+        let record = make(&event, &flow()).unwrap().unwrap();
+        assert!(matches!(
+            record.value.field("query").first(),
+            Some(FieldValue::Bytes(bytes)) if bytes.as_ref() == b"example.invalid"
+        ));
+        assert_eq!(record.value.field("answer").len(), 2);
+        for (field, expected) in [("trans_id", 42), ("qtype", 28), ("rcode", 0)] {
+            assert!(matches!(
+                record.value.field(field).first(),
+                Some(FieldValue::Int(value)) if *value == expected
+            ));
+            assert!(!record.missing.contains(field), "{field}");
+        }
+        assert!(matches!(
+            record.value.field("ttl").as_slice(),
+            [FieldValue::Int(60), FieldValue::Int(120)]
+        ));
+        for field in ["query", "answer", "ttl"] {
+            assert!(!record.missing.contains(field), "{field}");
+        }
+        for field in ["qclass", "rtt", "aa_flag", "rd_flag"] {
+            assert!(record.missing.contains(field), "{field}");
+        }
+    }
+
+    #[test]
+    fn incomplete_dns_answer_arrays_remain_marked_as_input_limits() {
+        for (second, incomplete) in [
+            (json!({"ttl":4294967295_u64}), vec!["answer", "ttl"]),
+            (json!({}), vec!["answer", "ttl"]),
+            (
+                json!({"rdata":"other.invalid", "ttl":4294967295_u64}),
+                vec!["ttl"],
+            ),
+            (json!({"ttl":120}), vec!["answer"]),
+        ] {
+            let event = json!({"event_type":"dns", "dns":{
+                "answers":[{"rdata":"example.invalid", "ttl":60}, second]
+            }});
+            let record = make(&event, &flow()).unwrap().unwrap();
+            for field in ["answer", "ttl"] {
+                let missing = incomplete.contains(&field);
+                assert_eq!(record.value.field(field).len(), if missing { 1 } else { 2 });
+                assert_eq!(record.missing.contains(field), missing, "{field}");
+            }
+        }
+        // A supplied empty answer set is complete, unlike an unavailable set.
+        let record = make(&json!({"event_type":"dns", "dns":{"answers":[]}}), &flow())
+            .unwrap()
+            .unwrap();
+        for field in ["answer", "ttl"] {
+            assert!(!record.missing.contains(field), "{field}");
+        }
     }
     #[test]
     fn unrepresentable_values_stay_empty_and_marked_missing() {
