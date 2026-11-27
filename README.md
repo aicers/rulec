@@ -18,8 +18,18 @@ normalized URI and an unpacked body, and a catalog of their fields lets
 a converter check the fields a rule uses. The crate documentation
 describes the format, the fields and how values are normalized.
 
-Not there yet: the converters from ET Open and SigmaHQ, and the fields
-of host records.
+ET Open Suricata 7.0.3 bundles can be converted with `convert_et_open`;
+`read_et_open_version` reads their source version without converting or
+compiling. Both take archive bytes and an optional external version
+number and perform no network access. The conversion applies a supplied
+blocklist, checks the field catalog, compiles accepted rules and reports
+rejections and compilation statistics. For a local archive:
+
+```sh
+cargo run --example et_open_summary -- emerging.rules.tar.gz 11342
+```
+
+Not there yet: the SigmaHQ converter and the fields of host records.
 
 ## Building
 
