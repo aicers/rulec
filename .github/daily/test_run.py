@@ -347,19 +347,19 @@ class DailyTests(unittest.TestCase):
                 self.assertTrue(run.finish(output))
                 self.assertIn(error, (output / "summary.md").read_text())
 
-    def test_all_rejected_scope_is_named_with_reasons_and_fails(self):
+    def test_all_rejected_scope_is_named_with_reasons_without_failing(self):
         with tempfile.TemporaryDirectory() as name:
             output = Path(name)
             run.save(output / "conversion.json", [report("et_open")])
             run.save(output / "differential.json", {
-                "status": "completed", "errors": ["no compared rules in scopes: ssh_server_banner"],
+                "status": "completed", "errors": [], "missing_scopes": [],
                 "coverage": {"ssh_server_banner": []},
                 "no_comparable_rules": {"ssh_server_banner": [
                     {"sid": "91", "reason": "needs_state"},
                     {"sid": "92", "reason": "unsupported_regex"},
                 ]},
             })
-            self.assertTrue(run.finish(output))
+            self.assertFalse(run.finish(output))
             summary = (output / "summary.md").read_text()
             self.assertIn("ssh_server_banner: 비교 가능한 규칙 없음 (no comparable rule)", summary)
             self.assertIn("91 (needs_state)", summary)

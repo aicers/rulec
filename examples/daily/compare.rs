@@ -439,7 +439,6 @@ pub(super) fn classify(
         if !compared.is_empty() {
             continue;
         }
-        result.missing_scopes.push(scope.clone());
         let accepted = infos.iter().any(|rule| rule.scopes.contains(scope));
         if !accepted && let Some(rules) = rejected.get(scope).filter(|rules| !rules.is_empty()) {
             result.no_comparable_rules.insert(
@@ -452,6 +451,8 @@ pub(super) fn classify(
                     })
                     .collect(),
             );
+        } else {
+            result.missing_scopes.push(scope.clone());
         }
     }
     if !result.missing_scopes.is_empty() {
@@ -740,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn all_rejected_and_accepted_uncovered_scopes_both_fail() {
+    fn all_rejected_scopes_report_reasons_without_failing() {
         // Neither scope nor SID is special: the decision uses this conversion's
         // accepted rules and rejection reasons, joined to the same source lines.
         let lines = vec![
@@ -773,23 +774,40 @@ mod tests {
                 .collect();
             let s = BTreeMap::from([(key("1", 1), evidence())]);
             let result = classify(&[covered], &s, &s, &BTreeMap::new(), &dropped, &rejected);
-            assert!(!result.errors.is_empty());
-            assert_eq!(result.missing_scopes, vec![scope.to_string()]);
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+            assert!(result.missing_scopes.is_empty());
             assert_eq!(result.no_comparable_rules.get(scope), rejected.get(scope));
+        }
+    }
 
-            // An accepted rule also needs an observed reference hit, even if
-            // other rules of that same scope were rejected.
+    #[test]
+    fn accepted_uncovered_scopes_fail_even_with_rejected_candidates() {
+        for scope in SCOPES {
+            let mut covered = info("1");
+            covered.scopes = SCOPES
+                .iter()
+                .filter(|s| **s != scope)
+                .map(|s| (*s).into())
+                .collect();
             let mut accepted = info("2");
             accepted.scopes = vec![scope.into()];
+            let hits = BTreeMap::from([(key("1", 1), evidence())]);
+            let rejected = BTreeMap::from([(
+                scope.into(),
+                vec![RejectedRule {
+                    sid: "91".into(),
+                    reason: "needs_state".into(),
+                }],
+            )]);
             let result = classify(
-                &[accepted],
-                &Hits::new(),
-                &Hits::new(),
+                &[covered, accepted],
+                &hits,
+                &hits,
                 &BTreeMap::new(),
-                &dropped,
+                &BTreeMap::new(),
                 &rejected,
             );
-            assert!(result.missing_scopes.contains(&scope.to_string()));
+            assert_eq!(result.missing_scopes, vec![scope.to_string()]);
             assert!(!result.no_comparable_rules.contains_key(scope));
             assert!(!result.errors.is_empty());
         }
