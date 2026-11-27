@@ -43,8 +43,10 @@ an older run or calls a retrieval failure the first run.
 
 The reference engine is Ubuntu 24.04's apt package
 `suricata=1:7.0.3-1build3`; the runner verifies `suricata -V` reports exactly
-`7.0.3`. [The overrides](../.github/daily/suricata.yaml) replace only EVE
-output settings. `--set vars.address-groups.HOME_NET=...` preserves all
+`7.0.3`. [The overrides](../.github/daily/suricata.yaml) replace EVE
+output settings and disable Ubuntu's system command socket: offline replay
+needs no control socket or permission to write under `/var/run`.
+`--set vars.address-groups.HOME_NET=...` preserves all
 sibling default variables. Both engines use the unchanged 7.0.3 defaults
 `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`. The report checks that the
 archive SHA-256 and HOME_NET actually recorded by both stages agree.

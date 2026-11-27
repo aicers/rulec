@@ -2,6 +2,9 @@
 ---
 # Only overrides from the packaged Suricata 7.0.3 default configuration.
 # HOME_NET is set on the command line to preserve sibling default variables.
+# Ubuntu enables a system command socket; offline replay needs no control API.
+unix-command:
+  enabled: no
 outputs:
   - eve-log:
       enabled: yes
