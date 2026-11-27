@@ -78,6 +78,7 @@ jobs:
           import json
           from pathlib import Path
           result = json.loads(Path('daily-results/status.json').read_text())
+          print(Path('daily-results/summary.md').read_text(), flush=True)
           raise SystemExit(int(result['failed']))
           PY
 

@@ -260,7 +260,10 @@ excludes only that pcap, records its reason, replays the rest and fails
 the run. Wrong Suricata version, extraction errors, archive/HOME_NET
 disagreement, or any coverage gap also fail. A scope whose source rules
 were all rejected still fails, with the rejection reasons reported as
-described above. **Disagreement alone
+described above. The final assertion prints the saved summary to its job
+log before checking the exit status, so source errors, excluded pcaps and
+coverage gaps are visible in the failed step's logs as well as the run
+summary and artifacts. **Disagreement alone
 does not fail the run.**
 
 ## Artifacts, issue filing and follow-up
