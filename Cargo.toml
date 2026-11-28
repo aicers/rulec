@@ -18,7 +18,7 @@ tar = "0.4"
 vectorscan-rs = "0.0.6"
 yaml-rust2 = "0.13"
 # Reads caller-supplied SigmaHQ archives without unrelated codecs or crypto.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

@@ -38,7 +38,7 @@ fn archive(files: &[(&str, &[u8])], comment: &str, mtimes: &[Option<u32>]) -> Ve
             let mut extra = vec![1];
             extra.extend_from_slice(&seconds.to_le_bytes());
             options
-                .add_extra_data(0x5455, extra.into_boxed_slice(), false)
+                .add_extra_field(0x5455, extra.into_boxed_slice(), false)
                 .unwrap();
         }
         zip.start_file(*name, options).unwrap();
@@ -200,6 +200,40 @@ fn same_archive_error(bytes: &[u8], emerging: bool) -> String {
     assert_eq!(std::mem::discriminant(&a), std::mem::discriminant(&b));
     assert_eq!(a.to_string(), b.to_string());
     a.to_string()
+}
+
+#[test]
+fn emerging_rejects_timestamps_without_the_central_mtime_flag() {
+    let original = archive(
+        &[("rules-emerging-threats/a.yml", b"bad rule")],
+        SHA,
+        &[Some(MTIME)],
+    );
+    assert!(read_sigma_hq_emerging_version(&original).is_ok());
+    let mut timestamp = vec![0x55, 0x54, 5, 0, 1];
+    timestamp.extend_from_slice(&MTIME.to_le_bytes());
+    let offsets: Vec<_> = original
+        .windows(timestamp.len())
+        .enumerate()
+        .filter_map(|(offset, bytes)| (bytes == timestamp).then_some(offset + 4))
+        .collect();
+    assert_eq!(offsets.len(), 2);
+    for flags in [0, 2] {
+        // The central header is authoritative even with a valid local mtime.
+        for local_flags in [1, flags] {
+            let mut bytes = original.clone();
+            *bytes.get_mut(*offsets.first().unwrap()).unwrap() = local_flags;
+            *bytes.get_mut(*offsets.last().unwrap()).unwrap() = flags;
+            assert!(matches!(
+                read_sigma_hq_emerging_version(&bytes),
+                Err(SigmaHqError::NoCommitInfo)
+            ));
+            assert!(matches!(
+                convert_sigma_hq_emerging(&bytes, &Blocklist::default()),
+                Err(SigmaHqError::NoCommitInfo)
+            ));
+        }
+    }
 }
 
 #[test]
@@ -1194,5 +1228,84 @@ fn excluded_members_do_not_need_a_supported_compression_method() {
             read_sigma_hq_version(&bytes, None).unwrap()
         };
         assert_eq!(version, conversion.summary.source_version);
+    }
+}
+
+#[test]
+fn utf8_and_cp437_member_names_preserve_rules_and_source_versions() {
+    let rule = simple("r", "{category: proxy}", "{c-uri: /x}", "selection");
+    for emerging in [false, true] {
+        let directory = if emerging {
+            "rules-emerging-threats"
+        } else {
+            "rules"
+        };
+        let make = |name: &str| {
+            archive(
+                &[
+                    (name, rule.as_bytes()),
+                    ("sigma/version.txt", VERSION_TEXT.as_bytes()),
+                ],
+                SHA,
+                &[Some(MTIME); 2],
+            )
+        };
+        let utf8 = make(&format!("sigma/{directory}/café.yml"));
+        let mut cp437 = make(&format!("sigma/{directory}/cafe.yml"));
+        // Replace the ASCII name in both headers with CP437 é (0x82).
+        let offsets: Vec<_> = cp437
+            .windows(b"/cafe.yml".len())
+            .enumerate()
+            .filter_map(|(offset, bytes)| (bytes == b"/cafe.yml").then_some(offset + 4))
+            .collect();
+        assert_eq!(offsets.len(), 2);
+        for offset in offsets {
+            *cp437.get_mut(offset).unwrap() = 0x82;
+        }
+        let convert = |bytes: &[u8]| {
+            if emerging {
+                convert_sigma_hq_emerging(bytes, &Blocklist::default()).unwrap()
+            } else {
+                convert_sigma_hq(bytes, None, &Blocklist::default()).unwrap()
+            }
+        };
+        let expected = convert(&utf8);
+        let actual = convert(&cp437);
+        assert_accepted(&actual, 1);
+        assert_eq!(actual.rules, expected.rules);
+        assert_eq!(
+            actual.summary.source_version,
+            expected.summary.source_version
+        );
+        let version = if emerging {
+            read_sigma_hq_emerging_version(&cp437).unwrap()
+        } else {
+            read_sigma_hq_version(&cp437, None).unwrap()
+        };
+        assert_eq!(version, actual.summary.source_version);
+        assert_eq!(
+            version.content_digest,
+            content_digest([("café.yml", rule.as_bytes())])
+        );
+    }
+}
+
+#[test]
+fn selected_members_with_bad_crc_fail_both_apis_as_invalid_zip() {
+    for (path, emerging) in [
+        ("rules/a.yml", false),
+        ("version.txt", false),
+        ("rules-emerging-threats/a.yml", true),
+    ] {
+        let mut bytes = archive(&[(path, b"corrupt member")], SHA, &[Some(MTIME)]);
+        // Keep the local and central headers consistent, but make their CRC
+        // disagree with the decoded payload to exercise the member read error.
+        for (signature, crc_offset) in [(b"PK\x03\x04", 14), (b"PK\x01\x02", 16)] {
+            let header = bytes.windows(4).position(|s| s == signature).unwrap();
+            *bytes.get_mut(header + crc_offset).unwrap() ^= 1;
+        }
+        let message = same_archive_error(&bytes, emerging);
+        assert!(message.starts_with("cannot read the zip:"), "{message}");
+        assert!(message.contains(&format!("reading {path}:")), "{message}");
     }
 }
