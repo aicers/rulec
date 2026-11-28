@@ -203,6 +203,40 @@ fn same_archive_error(bytes: &[u8], emerging: bool) -> String {
 }
 
 #[test]
+fn emerging_rejects_timestamps_without_the_central_mtime_flag() {
+    let original = archive(
+        &[("rules-emerging-threats/a.yml", b"bad rule")],
+        SHA,
+        &[Some(MTIME)],
+    );
+    assert!(read_sigma_hq_emerging_version(&original).is_ok());
+    let mut timestamp = vec![0x55, 0x54, 5, 0, 1];
+    timestamp.extend_from_slice(&MTIME.to_le_bytes());
+    let offsets: Vec<_> = original
+        .windows(timestamp.len())
+        .enumerate()
+        .filter_map(|(offset, bytes)| (bytes == timestamp).then_some(offset + 4))
+        .collect();
+    assert_eq!(offsets.len(), 2);
+    for flags in [0, 2] {
+        // The central header is authoritative even with a valid local mtime.
+        for local_flags in [1, flags] {
+            let mut bytes = original.clone();
+            *bytes.get_mut(*offsets.first().unwrap()).unwrap() = local_flags;
+            *bytes.get_mut(*offsets.last().unwrap()).unwrap() = flags;
+            assert!(matches!(
+                read_sigma_hq_emerging_version(&bytes),
+                Err(SigmaHqError::NoCommitInfo)
+            ));
+            assert!(matches!(
+                convert_sigma_hq_emerging(&bytes, &Blocklist::default()),
+                Err(SigmaHqError::NoCommitInfo)
+            ));
+        }
+    }
+}
+
+#[test]
 fn oversized_selected_members_fail_both_apis_but_outside_members_are_ignored() {
     let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
     for (path, emerging) in [

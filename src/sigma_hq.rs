@@ -143,7 +143,8 @@ fn unpack(
         // Excluded members need no decoder, even if their codec is disabled.
         let file = zip.by_index_raw(index).map_err(bad_zip)?;
         if source == Source::SigmaHqEmerging {
-            match utc_mtime(&file.extra_data().unwrap_or_default()) {
+            let mtime = central_extra_data(bytes, file.central_header_start()).and_then(utc_mtime);
+            match mtime {
                 Some(seconds) => {
                     timestamps.insert(seconds);
                 }
@@ -263,6 +264,21 @@ fn read_member(
 fn strict_date(text: &str) -> Option<Date> {
     let date: Date = text.parse().ok()?;
     (date.to_string() == text && text.len() == 10).then_some(date)
+}
+
+/// Borrows the original central extra fields so timestamp flags stay intact.
+/// zip 9's `extra_data()` serializes parsed fields and recomputes those flags.
+fn central_extra_data(bytes: &[u8], header_start: u64) -> Option<&[u8]> {
+    const HEADER_BYTES: usize = 46;
+    let entry = bytes.get(usize::try_from(header_start).ok()?..)?;
+    let header = entry.get(..HEADER_BYTES)?;
+    if header.get(..4)? != b"PK\x01\x02" {
+        return None;
+    }
+    let name_len = usize::from(u16::from_le_bytes(header.get(28..30)?.try_into().ok()?));
+    let extra_len = usize::from(u16::from_le_bytes(header.get(30..32)?.try_into().ok()?));
+    let extra_start = HEADER_BYTES + name_len;
+    entry.get(extra_start..extra_start + extra_len)
 }
 
 /// Reads the extended timestamp's UTC mtime, never the timezone-less DOS time.
@@ -931,6 +947,36 @@ mod tests {
             .unwrap()
             .0
         );
+    }
+
+    #[test]
+    fn central_extra_fields_reject_invalid_offsets_signatures_and_lengths() {
+        let extra = [0x55, 0x54, 5, 0, 1, 0, 0, 0, 0];
+        let mut bytes = vec![0; 46];
+        bytes.get_mut(..4).unwrap().copy_from_slice(b"PK\x01\x02");
+        bytes
+            .get_mut(28..30)
+            .unwrap()
+            .copy_from_slice(&3_u16.to_le_bytes());
+        bytes
+            .get_mut(30..32)
+            .unwrap()
+            .copy_from_slice(&9_u16.to_le_bytes());
+        bytes.extend_from_slice(b"abc");
+        bytes.extend_from_slice(&extra);
+        assert_eq!(central_extra_data(&bytes, 0), Some(extra.as_slice()));
+        let mut prefixed = b"prefix".to_vec();
+        prefixed.extend_from_slice(&bytes);
+        assert_eq!(central_extra_data(&prefixed, 6), Some(extra.as_slice()));
+        assert_eq!(central_extra_data(&bytes, u64::MAX), None);
+        assert_eq!(central_extra_data(&bytes, 1), None);
+        assert_eq!(central_extra_data(bytes.get(..45).unwrap(), 0), None);
+        assert_eq!(
+            central_extra_data(bytes.get(..bytes.len() - 1).unwrap(), 0),
+            None
+        );
+        *bytes.first_mut().unwrap() = 0;
+        assert_eq!(central_extra_data(&bytes, 0), None);
     }
 
     #[test]
