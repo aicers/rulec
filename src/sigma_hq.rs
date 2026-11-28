@@ -116,7 +116,10 @@ fn unpack(
     } else {
         "rules-emerging-threats/"
     };
-    let names: Vec<_> = zip.file_names().collect();
+    let names = zip
+        .file_names()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(bad_zip)?;
     let roots: BTreeSet<_> = names
         .iter()
         .filter_map(|name| name.split_once('/').map(|(root, _)| root))
@@ -140,7 +143,7 @@ fn unpack(
         // Excluded members need no decoder, even if their codec is disabled.
         let file = zip.by_index_raw(index).map_err(bad_zip)?;
         if source == Source::SigmaHqEmerging {
-            match utc_mtime(file.extra_data().unwrap_or_default()) {
+            match utc_mtime(&file.extra_data().unwrap_or_default()) {
                 Some(seconds) => {
                     timestamps.insert(seconds);
                 }
@@ -150,8 +153,8 @@ fn unpack(
         if file.is_dir() {
             continue;
         }
-        let relative = file
-            .name()
+        let name = file.name().map_err(bad_zip)?;
+        let relative = name
             .strip_prefix(&selected)
             .filter(|path| {
                 let mut parts = path.split('/').peekable();
@@ -170,13 +173,13 @@ fn unpack(
                 path.ends_with(".yml") || path.ends_with(".yaml")
             })
             .map(str::to_string);
-        let is_version = source == Source::SigmaHq && file.name() == version_path;
+        let is_version = source == Source::SigmaHq && name == version_path;
         if relative.is_none() && !is_version {
             continue;
         }
         drop(file);
         let file = zip.by_index(index).map_err(bad_zip)?;
-        let name = file.name().to_string();
+        let name = file.name().map_err(bad_zip)?.into_owned();
         let contents = read_member(file, &name, &mut remaining)?;
         if is_version {
             version_text = String::from_utf8(contents).ok()

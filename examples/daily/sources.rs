@@ -108,11 +108,14 @@ fn sigma_count(bytes: &[u8], emerging: bool) -> Result<usize> {
         "rules"
     };
     let directory = format!("{root}/");
-    let roots: BTreeSet<_> = zip
+    let names = zip
         .file_names()
+        .collect::<zip::result::ZipResult<Vec<_>>>()?;
+    let roots: BTreeSet<_> = names
+        .iter()
         .filter_map(|name| name.split_once('/').map(|(root, _)| root))
         .collect();
-    let selected = if zip.file_names().any(|name| name.starts_with(&directory)) {
+    let selected = if names.iter().any(|name| name.starts_with(&directory)) {
         directory
     } else if let Some(wrapper) = roots.first().filter(|_| roots.len() == 1) {
         format!("{wrapper}/{directory}")
@@ -125,7 +128,8 @@ fn sigma_count(bytes: &[u8], emerging: bool) -> Result<usize> {
         if !file.is_file() {
             continue;
         }
-        let Some(path) = file.name().strip_prefix(&selected) else {
+        let name = file.name()?;
+        let Some(path) = name.strip_prefix(&selected) else {
             continue;
         };
         let relative: Vec<_> = path.split('/').collect();
@@ -520,7 +524,7 @@ mod tests {
                 let mut extra = vec![1];
                 extra.extend_from_slice(&1_783_598_400_u32.to_le_bytes());
                 options
-                    .add_extra_data(0x5455, extra.into_boxed_slice(), false)
+                    .add_extra_field(0x5455, extra.into_boxed_slice(), false)
                     .unwrap();
             }
             zip.start_file(format!("{root}/test.yml"), options).unwrap();
