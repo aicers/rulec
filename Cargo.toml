@@ -1,6 +1,6 @@
 [package]
 name = "rulec"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Rule compiler for public signature rules, built on vectorscan"
 license = "Apache-2.0"
